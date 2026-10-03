@@ -147,7 +147,7 @@ const errors = [];
   await Promise.all(players.map((p) => p.waitForSelector('.projects', { timeout: 15000 })));
   const plans = {
     A: [['p01', 'z2'], ['p06', 'z1'], ['p07', 'z6'], ['p09', 'z1'], ['p02', 'z3']],
-    B: [['p01', 'z2'], ['p04', 'z2'], ['p09', 'z1'], ['p05', 'z3'], ['p14', 'z1']],
+    B: [['p01', 'z2'], ['p04', 'z2'], ['p09', 'z1'], ['p05', 'z9'], ['p07', 'z9']],
     C: [['p01', 'z2'], ['p07', 'z7'], ['p08', 'z5'], ['p15', 'z1'], ['p10', 'z6']],
     D: [['p03', 'z2'], ['p11', 'z5'], ['p12', 'z3'], ['p05', 'z3'], ['p02', 'z2']],
     E: [['p02', 'z3'], ['p01', 'z2'], ['p04', 'z2'], ['p06', 'z4'], ['p13', 'z8']],
@@ -164,11 +164,19 @@ const errors = [];
       await p.waitForFunction((pr) => [...document.querySelectorAll('.placed b')].some((b) => b.textContent.length) && document.querySelectorAll('.proj.on').length > 0 && !document.querySelector('.pickbar'), proj, { timeout: 10000 });
       await sleep(300);
     }
-    if (t === 'A') await p.screenshot({ path: SHOTS + '/08-player-map.png', fullPage: true });
+    if (t === 'A') {
+      const pre = await p.$$eval('.placed .effect', (l) => l.length);
+      if (pre !== 0) errors.push('effects visible before submit: ' + pre);
+      const pidX = await p.evaluate(() => localStorage.getItem('f5:pid'));
+      const v0 = await (await fetch(API + '?a=state&pid=' + pidX)).json();
+      if (v0.state.teams.some((tt) => tt.effects && !tt.submitted)) errors.push('effects leaked before submit');
+      await p.screenshot({ path: SHOTS + '/08-player-map.png', fullPage: true });
+    }
     await p.fill('[data-field="rationale"]', 'Эти проекты дают работу и удерживают людей.');
     p.once('dialog', (d) => d.accept());
     await p.click('button[data-act="submitMap"]');
     await sleep(400);
+    if (t === 'A') { await sleep(2500); await p.screenshot({ path: SHOTS + '/08b-player-map-submitted.png', fullPage: true }); }
   }
   await sleep(3000);
   const placedCount = await players[firstOf.C].$$eval('.placed li', (l) => l.length);
@@ -211,8 +219,8 @@ const errors = [];
       const others = view.state.teams.filter((t) => t.world !== 'A' && t.bid);
       if (others.some((t) => t.bid.amount != null)) errors.push('bid amounts leaked: ' + JSON.stringify(others.map((t) => t.bid)));
       const own = view.state.teams.find((t) => t.world === 'A');
-      if (!view.state.zoneRules) errors.push('zone rules missing');
-      if (!own.bid || own.bid.amount == null) errors.push('own bid not visible');
+      if (view.state.zoneRules) errors.push('zone rules leaked');
+      if (!own.bid || own.bid.amount == null) errors.push('own bid not visible: ' + JSON.stringify(own.bid) + ' ' + JSON.stringify(view.state.teams.map((t) => [t.world, t.bid])));
     }
     await host.waitForFunction(() => !document.querySelector('.hlot'), null, { timeout: 40000 });
     await sleep(1500);
