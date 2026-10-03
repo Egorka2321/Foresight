@@ -8,6 +8,11 @@
   if (API && API.indexOf('ВСТАВЬТЕ') >= 0) API = '';
 
   var PHASES = ['intro', 'lobby', 'signals', 'factors', 'teams', 'world', 'map', 'overlay', 'auction', 'reveal', 'shock', 'results'];
+  var PHASE_HINT = {
+    intro: 'Что такое форсайт', lobby: 'Собираемся', signals: 'Что меняется вокруг города?', factors: 'Что сильнее всего изменит город?',
+    teams: 'Объединяемся в команды', world: 'Ваш мир будущего', map: 'Стройте город для своего мира', overlay: 'Что совпало у команд',
+    auction: 'Бюджет ограничен — выбирайте', reveal: 'Какой мир наступит?', shock: 'Неожиданное событие', results: 'Чья стратегия устойчивее?',
+  };
   var PHASE_NAME = { intro: 'Заставка', lobby: 'Сбор', signals: 'Сигналы', factors: 'Факторы', teams: 'Команды', world: 'Миры', map: 'Карта', overlay: 'Наложение', auction: 'Аукцион', reveal: 'Судьба', shock: 'Шок', results: 'Итоги' };
   var W = G.worldOrder;
   var FK = Object.keys(G.factors);
@@ -120,8 +125,20 @@
     if (S && st.v < S.v) return;
     var prevPhase = S && S.phase;
     S = st;
-    if (prevPhase && prevPhase !== S.phase) { ui.pending = null; window.scrollTo(0, 0); lastHtml = ''; }
+    if (prevPhase && prevPhase !== S.phase) { ui.pending = null; window.scrollTo(0, 0); lastHtml = ''; phaseTransition(S.phase); }
     render();
+  }
+
+  // переход между этапами: шторка с номером этапа, затем контент плавно проявляется
+  function phaseTransition(ph) {
+    if (role === 'host' || role === 'curator') return;
+    var fx = document.getElementById('phaseFx');
+    var i = PHASES.indexOf(ph);
+    if (fx) {
+      fx.innerHTML = '<div class="fxin"><span class="fxnum">' + String(i + 1).padStart(2, '0') + '</span><span class="fxline"></span><span class="fxname">' + esc(PHASE_NAME[ph]) + '</span><span class="fxhint">' + esc(PHASE_HINT[ph] || '') + '</span></div>';
+      fx.classList.remove('run'); void fx.offsetWidth; fx.classList.add('run');
+    }
+    root.classList.remove('enter'); void root.offsetWidth; root.classList.add('enter');
   }
 
   function toast(msg, kind, ms) {
@@ -208,6 +225,16 @@
     var names = {}; Object.keys(G.zones).forEach(function (z) { names[z] = G.zones[z].name; });
     opts.names = names;
     return window.CityMap.svg(opts);
+  }
+
+  function mapBox(opts, cls) {
+    return '<div class="mapbox' + (cls ? ' ' + cls : '') + '">' + mapSvg(opts) + '</div>';
+  }
+
+  function phaseStrip(ph) {
+    var idx = PHASES.indexOf(ph);
+    return '<div class="pstrip" aria-label="Этап ' + (idx + 1) + ' из ' + PHASES.length + '"><div class="pseg">' + PHASES.map(function (p, i) { return '<i class="' + (i < idx ? 'done' : i === idx ? 'now' : '') + '"></i>'; }).join('') + '</div>' +
+      '<div class="pmeta"><span class="pnum">Этап ' + (idx + 1) + ' из ' + PHASES.length + '</span><b>' + PHASE_NAME[ph] + '</b></div></div>';
   }
 
   function route(current) {
@@ -322,7 +349,23 @@
       api({ a: 'closeLot', project: cur.project }).then(function (d) { if (d.result) toast(resultText(d.result), 'ok'); }, function (e) { ui.closing = null; toast(e.message, 'err'); });
     }
   }
-  function loop(t) { tick(); if (swarm) swarm.frame(t); requestAnimationFrame(loop); }
+  // фон телефона: тот же «рой» сигналов, что и на проекторе, но спокойнее
+  var bg = null, bgFrame = 0;
+  function bgSwarm() {
+    if (role !== 'play' || bg) return;
+    var cv = document.createElement('canvas');
+    cv.className = 'bgswarm';
+    cv.setAttribute('aria-hidden', 'true');
+    document.body.insertBefore(cv, document.body.firstChild);
+    bg = new window.Swarm(70);
+    bg.attach(cv);
+  }
+  function loop(t) {
+    tick();
+    if (swarm) swarm.frame(t);
+    if (bg && (bgFrame++ % 2 === 0)) { bg.setStep(S && S.phase === 'intro' ? 0 : 0); bg.frame(t); }
+    requestAnimationFrame(loop);
+  }
 
   function resultText(r) {
     var p = G.projects[r.project].name;
@@ -426,7 +469,7 @@
     else if (ph === 'reveal') body = viewRevealPlayer(t);
     else if (ph === 'shock') body = viewShockPlayer(t);
     else body = viewResultsPlayer(t);
-    return head + '<div class="routewrap">' + route(ph) + '</div>' + body;
+    return head + phaseStrip(ph) + body;
   }
 
   function viewJoin() {
@@ -558,7 +601,7 @@
     var effSum = placed.reduce(function (a, p) { var r = eff(t.id, p); return a + (r ? r.v : 0); }, 0);
     var html = '<section class="pad">' +
       '<div class="maphead"><h1 class="h2">Город в мире «' + esc(tName(t.id)) + '»</h1><p class="muted">Выберите ' + limit + ' проектов, которые нужны городу в вашем мире, и поставьте их на карту. Место имеет значение: после отправки плана жители оценят, где вы строите, — штрафы и бонусы войдут в итог.</p></div>' +
-      '<div class="mapbox' + (pend ? ' picking' : '') + '">' + mapSvg({ pins: pins, pick: !!pend }) + '</div>';
+      mapBox({ pins: pins, pick: !!pend }, pend ? 'picking' : '');
     if (pend) {
       html += '<div class="pickbar" role="status"><p>Куда поставить «' + esc(pend.name) + '»? Нажмите на зону на карте или выберите здесь:</p><div class="zonechips">' +
         Object.keys(G.zones).map(function (z) { return '<button class="chip zbtn" data-act="placeZone" data-zone="' + z + '"' + (ui.busy ? ' disabled' : '') + '>' + esc(G.zones[z].name) + '</button>'; }).join('') +
@@ -598,7 +641,7 @@
 
   function viewOverlayPlayer(t) {
     return '<section class="pad"><h1 class="h2">Пять карт наложены</h1><p class="muted">Каждая метка — проект одной из команд. Проекты, которые выбрали три команды и больше, нужны сразу в нескольких мирах — это кандидаты в устойчивые решения.</p>' +
-      '<div class="mapbox">' + mapSvg({ pins: allPins() }) + '</div>' + overlayList() + '</section>';
+      mapBox({ pins: allPins() }) + overlayList() + '</section>';
   }
 
   function viewAuctionPlayer(t) {
@@ -792,14 +835,14 @@
   }
 
   function screenMap() {
-    return '<div class="ssplit"><div class="mapbox">' + mapSvg({ pins: allPins() }) + '</div><div class="sprog"><h2 class="h2">Команды строят город</h2>' + S.teams.map(function (t) {
+    return '<div class="ssplit">' + mapBox({ pins: allPins() }) + '<div class="sprog"><h2 class="h2">Команды строят город</h2>' + S.teams.map(function (t) {
       var n = Object.keys(t.placements || {}).length;
       return '<div class="prow" style="' + teamStyle(t.id) + '"><span class="tl s">' + tNo(t.id) + '</span><span class="pname">' + esc(tName(t.id)) + '</span><span class="pbar"><i style="width:' + (n / G.mapLimit * 100) + '%"></i></span><span class="pn">' + (t.submitted ? 'готово' : n + '/' + G.mapLimit) + '</span></div>';
     }).join('') + '<p class="small muted">Метка с восклицательным знаком — проект в неудачном месте: жители против.</p></div></div>';
   }
 
   function screenOverlay() {
-    return '<div class="ssplit"><div class="mapbox">' + mapSvg({ pins: allPins() }) + '</div><div><h2 class="h2">Что совпало у команд</h2>' + overlayList(10) + '</div></div>';
+    return '<div class="ssplit">' + mapBox({ pins: allPins() }) + '<div><h2 class="h2">Что совпало у команд</h2>' + overlayList(10) + '</div></div>';
   }
 
   function screenAuction() {
@@ -1156,9 +1199,10 @@
     if ((e.key === 'Enter' || e.key === ' ') && e.target.matches && e.target.matches('polygon[data-act]')) { e.preventDefault(); e.target.dispatchEvent(new MouseEvent('click', { bubbles: true })); }
   });
 
-  window.addEventListener('hashchange', function () { readRole(); S = null; lastHtml = ''; render(); poll(); });
+  window.addEventListener('hashchange', function () { readRole(); S = null; lastHtml = ''; bgSwarm(); render(); poll(); });
   document.addEventListener('visibilitychange', function () { if (!document.hidden) poll(); });
 
+  bgSwarm();
   render();
   poll();
   requestAnimationFrame(loop);
