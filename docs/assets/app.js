@@ -60,7 +60,8 @@
   function teamStyle(ti) { return '--c:' + tColor(ti) + ';--cs:' + tSoft(ti); }
   function worldStyle(wid) { var w = world(wid); return '--c:' + w.color + ';--cs:' + w.soft; }
   function teamOfWorld(wid) { for (var i = 0; i < S.teams.length; i++) if (S.teams[i].world === wid) return i; return null; }
-  function rule(project, zone) { var r = S.zoneRules && S.zoneRules[project]; return r && r[zone] ? { v: r[zone][0], text: r[zone][1] } : null; }
+  // последствия размещения приходят с сервера только после отправки плана команды
+  function eff(ti, project) { var t = S.teams[ti]; return t && t.effects && t.effects[project] ? t.effects[project] : null; }
   function chip(ti, big) { return '<span class="tno' + (big ? ' big' : '') + '" style="' + teamStyle(ti) + '">' + tNo(ti) + '</span>'; }
 
   // ---------- сеть ----------
@@ -249,7 +250,7 @@
     var pins = [];
     S.teams.forEach(function (t) {
       Object.keys(t.placements || {}).forEach(function (p) {
-        var r = rule(p, t.placements[p]);
+        var r = eff(t.id, p);
         pins.push({ zone: t.placements[p], color: tColor(t.id), label: String(tNo(t.id)), bad: r && r.v < 0 });
       });
     });
@@ -552,11 +553,11 @@
     var placed = Object.keys(t.placements || {});
     var limit = G.mapLimit;
     var full = placed.length >= limit;
-    var pins = placed.map(function (p, i) { var r = rule(p, t.placements[p]); return { zone: t.placements[p], color: tColor(t.id), label: String(i + 1), bad: r && r.v < 0 }; });
+    var pins = placed.map(function (p, i) { var r = eff(t.id, p); return { zone: t.placements[p], color: tColor(t.id), label: String(i + 1), bad: r && r.v < 0 }; });
     var pend = ui.pending && !t.submitted ? G.projects[ui.pending] : null;
-    var effSum = placed.reduce(function (a, p) { var r = rule(p, t.placements[p]); return a + (r ? r.v : 0); }, 0);
+    var effSum = placed.reduce(function (a, p) { var r = eff(t.id, p); return a + (r ? r.v : 0); }, 0);
     var html = '<section class="pad">' +
-      '<div class="maphead"><h1 class="h2">Город в мире «' + esc(tName(t.id)) + '»</h1><p class="muted">Выберите ' + limit + ' проектов, которые нужны городу в вашем мире, и поставьте их на карту. Место имеет значение: жители могут быть против.</p></div>' +
+      '<div class="maphead"><h1 class="h2">Город в мире «' + esc(tName(t.id)) + '»</h1><p class="muted">Выберите ' + limit + ' проектов, которые нужны городу в вашем мире, и поставьте их на карту. Место имеет значение: после отправки плана жители оценят, где вы строите, — штрафы и бонусы войдут в итог.</p></div>' +
       '<div class="mapbox' + (pend ? ' picking' : '') + '">' + mapSvg({ pins: pins, pick: !!pend }) + '</div>';
     if (pend) {
       html += '<div class="pickbar" role="status"><p>Куда поставить «' + esc(pend.name) + '»? Нажмите на зону на карте или выберите здесь:</p><div class="zonechips">' +
@@ -566,7 +567,7 @@
     html += '<div class="counter"><b>' + placed.length + '</b> из ' + limit + ' проектов' + (effSum ? ' · последствия размещения: <b class="' + (effSum < 0 ? 'neg' : 'pos') + '">' + signed(effSum) + '</b>' : '') + (t.submitted ? ' · план отправлен' : '') + '</div>';
     if (placed.length) {
       html += '<ol class="placed">' + placed.map(function (p, i) {
-        var r = rule(p, t.placements[p]);
+        var r = eff(t.id, p);
         return '<li class="' + (r ? (r.v < 0 ? 'neg' : 'pos') : '') + '"><span class="num" style="--c:' + tColor(t.id) + '">' + (i + 1) + '</span><div class="pbody"><b>' + esc(G.projects[p].name) + '</b><span class="muted small">' + esc(G.zones[t.placements[p]].name) + '</span>' + effectHtml(r) + '</div>' +
           (t.submitted ? '' : '<span class="acts"><button class="link" data-act="pick" data-project="' + p + '">Переставить</button><button class="link" data-act="unplace" data-project="' + p + '">Убрать</button></span>') + '</li>';
       }).join('') + '</ol>';
@@ -614,7 +615,7 @@
       var myZone = t.placements[cur.project];
       html += '<article class="lot"><div class="lothead"><div><span class="tag">' + esc(pr.tag) + '</span><h2 class="h2">' + esc(pr.name) + '</h2></div>' + countdownHtml(cur, false) + '</div><p>' + esc(pr.text) + '</p>' +
         '<p class="small muted">На картах выбрали: ' + dots(ov ? ov.teams : []) + '</p>' +
-        (myZone ? '<p class="small">На вашей карте: <b>' + esc(G.zones[myZone].name) + '</b></p>' + effectHtml(rule(cur.project, myZone)) : '') + '</article>';
+        (myZone ? '<p class="small">На вашей карте: <b>' + esc(G.zones[myZone].name) + '</b></p>' + effectHtml(eff(t.id, cur.project)) : '') + '</article>';
       if (open) {
         var v = Math.max(0, Math.min(t.budget, ui.bid == null ? 10 : ui.bid));
         html += '<div class="bidbox"><p class="lbl">Ставка команды</p><div class="stepper">' +
@@ -654,7 +655,7 @@
     if (!sc.projects.length) return html + '<p class="muted">Команда ничего не купила на аукционе.</p>';
     html += '<ul class="bought score-list">' + sc.projects.map(function (pp) {
       var base = S.payoff[pp.project][wi], v = withShock ? pp.value : base + pp.place;
-      var r = rule(pp.project, pp.zone);
+      var r = pp.place ? { v: pp.place, text: pp.placeText } : null;
       return '<li><div><b>' + esc(G.projects[pp.project].name) + '</b><span class="small muted">в этом мире ' + signed(base) + (pp.place ? ' · место ' + signed(pp.place) : '') + (withShock && v !== base + pp.place ? ' · шок ' + signed(v - base - pp.place) : '') + '</span>' +
         (r && r.v < 0 ? '<span class="small neg">' + esc(r.text) + '</span>' : '') + '</div><span class="' + (v > 0 ? 'pos' : v < 0 ? 'neg' : '') + '">' + signed(v) + '</span></li>';
     }).join('') + '</ul>';
@@ -911,7 +912,7 @@
       }).join('') + '<button class="btn" data-act="dealWorlds">Перераздать миры заново</button>';
     if (ph === 'map') return '<h2 class="h2">Карта</h2>' + S.teams.map(function (t) {
       var n = Object.keys(t.placements || {}).length;
-      var bad = Object.keys(t.placements || {}).filter(function (p) { var r = rule(p, t.placements[p]); return r && r.v < 0; }).length;
+      var bad = Object.keys(t.placements || {}).filter(function (p) { var r = eff(t.id, p); return r && r.v < 0; }).length;
       return progressRow(t.id, n, G.mapLimit, t.submitted ? 'отправлен' : n + '/' + G.mapLimit, (bad ? '<span class="small neg">штрафов: ' + bad + '</span>' : '') + (t.submitted ? '<button class="link" data-act="unlockMap" data-team="' + t.id + '">Открыть</button>' : ''));
     }).join('');
     if (ph === 'overlay') return '<h2 class="h2">Наложение карт</h2>' + overlayList();
@@ -1007,7 +1008,7 @@
     html += '<h2 class="h3">Работа команды</h2><div class="cwork">' + ['title', 'residents', 'business', 'government', 'signposts', 'rationale', 'shockAnswer'].map(function (k) {
       var lbl = { title: 'Название мира', residents: 'Жители', business: 'Бизнес', government: 'Власть', signposts: 'Ранние признаки', rationale: 'Обоснование плана', shockAnswer: 'Реакция на шок' }[k];
       return t[k] ? '<p><b>' + lbl + ':</b> ' + esc(t[k]) + '</p>' : '';
-    }).join('') + (Object.keys(t.placements || {}).length ? '<p><b>На карте:</b> ' + Object.keys(t.placements).map(function (p) { var r = rule(p, t.placements[p]); return esc(G.projects[p].name) + ' (' + esc(G.zones[t.placements[p]].name) + (r ? ', ' + signed(r.v) : '') + ')'; }).join(', ') + '</p>' : '') + '</div></div>';
+    }).join('') + (Object.keys(t.placements || {}).length ? '<p><b>На карте:</b> ' + Object.keys(t.placements).map(function (p) { var r = eff(t.id, p); return esc(G.projects[p].name) + ' (' + esc(G.zones[t.placements[p]].name) + (r ? ', ' + signed(r.v) : '') + ')'; }).join(', ') + '</p>' : '') + '</div></div>';
     return html;
   }
 
@@ -1056,16 +1057,19 @@
         if (!ui.pending) return;
         var zone = d.zone || (e.target.dataset && e.target.dataset.zone);
         var proj = ui.pending; ui.pending = null;
-        run({ a: 'place', project: proj, zone: zone }).then(function (r) {
-          var ef = r.effect;
-          if (ef && ef.value < 0) toast('Жители против (' + signed(ef.value) + '): ' + ef.text, 'err', 6500);
-          else if (ef && ef.value > 0) toast('Удачное место (' + signed(ef.value) + '): ' + ef.text, 'ok', 5000);
-          else toast('«' + G.projects[proj].name + '» → ' + G.zones[zone].name, 'ok');
-        }, function () { });
+        run({ a: 'place', project: proj, zone: zone }, '«' + G.projects[proj].name + '» → ' + G.zones[zone].name).catch(function () { });
         break;
       }
       case 'unplace': run({ a: 'place', project: d.project, zone: '' }).catch(function () { }); break;
-      case 'submitMap': if (confirm('Отправить план команды? После этого его нельзя будет изменить.')) run({ a: 'submitMap' }, 'План отправлен').catch(function () { }); break;
+      case 'submitMap':
+        if (confirm('Отправить план команды? После этого его нельзя будет изменить, а жители оценят размещение.'))
+          run({ a: 'submitMap' }).then(function (r) {
+            var e2 = r.effects || { sum: 0, count: 0 };
+            if (!e2.count) toast('План отправлен. Жители не возражают против размещения.', 'ok', 5000);
+            else toast('План отправлен. Реакция жителей на размещение: ' + signed(e2.sum) + ' — подробности под проектами.', e2.sum < 0 ? 'err' : 'ok', 6500);
+            window.scrollTo(0, 0);
+          }, function () { });
+        break;
       case 'bidStep': { var t = myTeam(); ui.bid = Math.max(0, Math.min(t ? t.budget : 0, (ui.bid == null ? 10 : ui.bid) + Number(d.d))); if (ui.bid > 0 && ui.bid < 5) ui.bid = 5; render(); break; }
       case 'bid': run({ a: 'bid', amount: ui.bid }, 'Ставка принята: ' + ui.bid).catch(function () { }); break;
       case 'pass': run({ a: 'bid', amount: 0 }, 'Команда пасует').catch(function () { }); break;
