@@ -7,13 +7,14 @@
   var API = qs.get('api') || CFG.API_URL || '';
   if (API && API.indexOf('ВСТАВЬТЕ') >= 0) API = '';
 
-  var PHASES = ['intro', 'lobby', 'signals', 'factors', 'teams', 'world', 'map', 'overlay', 'auction', 'reveal', 'shock', 'results'];
+  var PHASES = ['intro', 'lobby', 'signals', 'factors', 'teams', 'world', 'map', 'overlay', 'auction', 'reveal', 'shock', 'results', 'bet', 'final'];
   var PHASE_HINT = {
     intro: 'Что такое форсайт', lobby: 'Собираемся', signals: 'Что меняется вокруг города?', factors: 'Что сильнее всего изменит город?',
     teams: 'Объединяемся в команды', world: 'Ваш мир будущего', map: 'Стройте город для своего мира', overlay: 'Что совпало у команд',
-    auction: 'Бюджет ограничен — выбирайте', reveal: 'Какой мир наступит?', shock: 'Неожиданное событие', results: 'Чья стратегия устойчивее?',
+    auction: 'Бюджет ограничен — выбирайте', reveal: 'Какой мир наступит?', shock: 'Кубик решит, сколько будет шоков', results: 'Кто победил и почему',
+    bet: 'Рискнёте своими баллами?', final: 'Итоговый рейтинг',
   };
-  var PHASE_NAME = { intro: 'Заставка', lobby: 'Сбор', signals: 'Сигналы', factors: 'Факторы', teams: 'Команды', world: 'Миры', map: 'Карта', overlay: 'Наложение', auction: 'Аукцион', reveal: 'Судьба', shock: 'Шок', results: 'Итоги' };
+  var PHASE_NAME = { intro: 'Заставка', lobby: 'Сбор', signals: 'Сигналы', factors: 'Факторы', teams: 'Команды', world: 'Миры', map: 'Карта', overlay: 'Наложение', auction: 'Аукцион', reveal: 'Судьба', shock: 'Шоки', results: 'Итоги', bet: 'Ставка', final: 'Финал' };
   var W = G.worldOrder;
   var FK = Object.keys(G.factors);
   var SPIN_MS = 6500;
@@ -41,7 +42,7 @@
   var saveTimers = {};
   var ui = {
     pending: null, bid: null, busy: false, conn: true, curTeam: Number(store.get('curTeam') || 0), spinDone: null, lotSeen: null,
-    closing: null, autoClose: true, lotSeconds: 40, toastT: null, sigType: 'trend', rate: null, rateEdit: false, renaming: false,
+    closing: {}, bids: {}, sel: {}, autoClose: true, lotSeconds: 40, toastT: null, sigType: 'trend', rate: null, rateEdit: false, renaming: false,
   };
   var root = document.getElementById('app');
   var swarm = null;
@@ -67,6 +68,15 @@
   function teamOfWorld(wid) { for (var i = 0; i < S.teams.length; i++) if (S.teams[i].world === wid) return i; return null; }
   // последствия размещения приходят с сервера только после отправки плана команды
   function eff(ti, project) { var t = S.teams[ti]; return t && t.effects && t.effects[project] ? t.effects[project] : null; }
+  // капитан: назначен или лидирует в голосовании (сервер присылает t.leader)
+  function captainId(ti) { var t = S.teams[ti]; return t ? (t.captain || t.leader || null) : null; }
+  function isCaptain(t) { return !!(t && pid && captainId(t.id) === pid); }
+  function captainName(ti) { var c = captainId(ti); return c && S.players[c] ? S.players[c].name : '—'; }
+  function captainBanner(t) {
+    if (isCaptain(t)) return '<div class="capbar me"><span class="crown" aria-hidden="true"></span><span><b>Вы капитан.</b> Вы вводите ответы и делаете ставки за всю команду — советуйтесь с ней.</span></div>';
+    return '<div class="capbar"><span class="crown" aria-hidden="true"></span><span>За команду действует капитан <b>' + esc(captainName(t.id)) + '</b>. Обсуждайте и подсказывайте ему — экран обновится сам.</span></div>';
+  }
+  function myPoints() { var pp = S.points && pid && S.points.players[pid]; return pp || null; }
   function chip(ti, big) { return '<span class="tno' + (big ? ' big' : '') + '" style="' + teamStyle(ti) + '">' + tNo(ti) + '</span>'; }
 
   // ---------- сеть ----------
@@ -106,12 +116,25 @@
         if (d.now) offset = d.now - Date.now();
         if (d.state) applyState(d.state);
         setConn(true);
-        pollTimer = setTimeout(poll, role === 'play' ? (CFG.POLL_PLAYER_MS || 2000) : (CFG.POLL_HOST_MS || 1500));
+        pollTimer = setTimeout(poll, pollDelay());
       })
       .catch(function () {
         setConn(false);
-        pollTimer = setTimeout(poll, 3000);
+        pollTimer = setTimeout(poll, Math.max(4000, pollDelay() * 1.5));
       });
+  }
+
+  // как часто спрашивать сервер: капитаны и ведущий — чаще, остальные игроки — реже (так сервер не перегружается)
+  function pollDelay() {
+    if (role === 'host') return CFG.POLL_HOST_MS || 2000;
+    if (role === 'screen') return CFG.POLL_SCREEN_MS || 2500;
+    if (role === 'curator') return 5000;
+    var ph = S && S.phase;
+    if (ph === 'intro' || ph === 'lobby') return CFG.POLL_IDLE_MS || 5000;
+    var t = S && myTeam();
+    if (t && isCaptain(t)) return CFG.POLL_PLAYER_MS || 2000;
+    if (ph === 'signals' || ph === 'factors' || ph === 'teams' || ph === 'bet') return CFG.POLL_ACTIVE_MS || 3000;
+    return CFG.POLL_TEAM_MS || 4000;
   }
 
   function setConn(ok) {
@@ -336,6 +359,9 @@
       var left = Math.max(0, Number(el.dataset.ring) - n), tot = Number(el.dataset.total), len = Number(el.dataset.len);
       el.setAttribute('stroke-dashoffset', (len * (1 - left / tot)).toFixed(1));
     });
+    var dc = document.getElementById('dice');
+    if (dc && S.dice) { var ang = diceAngle(); dc.style.transform = 'rotateX(' + ang[0].toFixed(1) + 'deg) rotateY(' + ang[1].toFixed(1) + 'deg)'; }
+    if (S.dice) { var dk = S.dice.id + (diceDone() ? ':done' : ''); if (ui.diceDone !== dk) { ui.diceDone = dk; if (diceDone()) render(); } }
     var wh = document.getElementById('wheel');
     if (wh && S.reveal) wh.style.transform = 'rotate(' + wheelAngle().toFixed(2) + 'deg)';
     if (S.reveal) {
@@ -343,12 +369,16 @@
       var key = S.reveal.spinId + (st.done ? ':done' : '');
       if (ui.spinDone !== key) { ui.spinDone = key; if (st.done) render(); }
     }
-    var cur = S.auction && S.auction.current;
-    if (role === 'host' && pinOk() && cur && ui.autoClose && n > cur.endsAt + 1600 && ui.closing !== cur.project) {
-      ui.closing = cur.project;
-      api({ a: 'closeLot', project: cur.project }).then(function (d) { if (d.result) toast(resultText(d.result), 'ok'); }, function (e) { ui.closing = null; toast(e.message, 'err'); });
+    if (role === 'host' && pinOk() && ui.autoClose && S.auction && S.auction.open) {
+      S.auction.open.forEach(function (lot) {
+        if (n > lot.endsAt + 1600 && !ui.closing[lot.project]) {
+          ui.closing[lot.project] = true;
+          api({ a: 'closeLot', project: lot.project }).then(function (d) { if (d.result) toast(resultText(d.result), 'ok'); }, function (e) { ui.closing[lot.project] = false; toast(e.message, 'err'); });
+        }
+      });
     }
   }
+
   // фон телефона: тот же «рой» сигналов, что и на проекторе, но спокойнее
   var bg = null, bgFrame = 0;
   function bgSwarm() {
@@ -468,6 +498,8 @@
     else if (ph === 'auction') body = viewAuctionPlayer(t);
     else if (ph === 'reveal') body = viewRevealPlayer(t);
     else if (ph === 'shock') body = viewShockPlayer(t);
+    else if (ph === 'bet') body = viewBetPlayer(t);
+    else if (ph === 'final') body = viewFinalPlayer(t);
     else body = viewResultsPlayer(t);
     return head + phaseStrip(ph) + body;
   }
@@ -483,8 +515,12 @@
 
   function viewIntroPlayer(p) {
     var sl = G.intro[S.introStep || 0];
-    return '<section class="pad center wait"><div class="introcanvas"><canvas class="swarm" data-step="' + (S.introStep || 0) + '" aria-hidden="true"></canvas></div>' +
-      '<h1 class="h2">Смотрите на экран</h1><p class="muted">Сейчас ведущие расскажут, что такое форсайт.</p>' +
+    if (sl.layout === 'rules') {
+      return '<section class="pad"><h1 class="h2">' + esc(sl.title) + '</h1><p class="muted">' + esc(sl.text) + '</p><ol class="rulelist phone">' +
+        sl.steps.map(function (x) { return '<li><b>' + esc(x[0]) + '</b><span>' + esc(x[1]) + '</span></li>'; }).join('') + '</ol></section>';
+    }
+    return '<section class="pad center wait"><div class="introcanvas"><canvas class="swarm" data-step="' + (sl.swarm || 0) + '" aria-hidden="true"></canvas></div>' +
+      '<h1 class="h2">Смотрите на экран</h1><p class="muted">Ведущие рассказывают, что такое форсайт.</p>' +
       '<p class="slidecap">' + esc(sl.title) + '</p></section>';
   }
 
@@ -546,19 +582,37 @@
   }
 
   function viewTeamsPlayer(p) {
+    var html = '<section class="pad">';
     if (S.teamMode === 'host') {
-      if (p.team == null) return '<section class="pad center"><div class="pulse"></div><h1 class="h2">Ведущий распределяет команды</h1><p class="muted">Подождите немного — вы увидите свою команду здесь.</p></section>';
-      return '<section class="pad">' + teamIntro(p.team) + '<p class="muted">Скоро каждая команда получит случайный мир будущего.</p></section>';
+      if (p.team == null) return html + '<div class="pulse"></div><h1 class="h2 center">Ведущий распределяет команды</h1><p class="muted center">Подождите немного — вы увидите свою команду здесь.</p></section>';
+      html += teamIntro(p.team);
+    } else {
+      html += '<h1 class="h2">Выберите команду</h1><p class="muted">В команде до ' + S.teamSize + ' человек. Миры будущего раздадут командам случайно.</p><div class="teamgrid">';
+      S.teams.forEach(function (t) {
+        var m = members(t.id), mine = p.team === t.id, full = m.length >= S.teamSize && !mine;
+        html += '<button class="teamtile' + (mine ? ' mine' : '') + '" style="' + teamStyle(t.id) + '" data-act="pickTeam" data-team="' + t.id + '"' + (full || ui.busy ? ' disabled' : '') + '>' +
+          '<span class="tl">' + tNo(t.id) + '</span><span class="tc">' + m.length + '/' + S.teamSize + '</span>' +
+          '<span class="tm">' + (m.length ? m.map(function (x) { return esc(x.name); }).join(', ') : 'Пока пусто') + '</span>' +
+          (mine ? '<span class="tmark">Ваша команда</span>' : full ? '<span class="tmark">Мест нет</span>' : '') + '</button>';
+      });
+      html += '</div>' + (p.team != null ? '<button class="link" data-act="pickTeam" data-team="">Выйти из команды</button>' : '');
     }
-    var html = '<section class="pad"><h1 class="h2">Выберите команду</h1><p class="muted">В команде до ' + S.teamSize + ' человек. Миры будущего раздадут командам случайно.</p><div class="teamgrid">';
-    S.teams.forEach(function (t) {
-      var m = members(t.id), mine = p.team === t.id, full = m.length >= S.teamSize && !mine;
-      html += '<button class="teamtile' + (mine ? ' mine' : '') + '" style="' + teamStyle(t.id) + '" data-act="pickTeam" data-team="' + t.id + '"' + (full || ui.busy ? ' disabled' : '') + '>' +
-        '<span class="tl">' + tNo(t.id) + '</span><span class="tc">' + m.length + '/' + S.teamSize + '</span>' +
-        '<span class="tm">' + (m.length ? m.map(function (x) { return esc(x.name); }).join(', ') : 'Пока пусто') + '</span>' +
-        (mine ? '<span class="tmark">Ваша команда</span>' : full ? '<span class="tmark">Мест нет</span>' : '') + '</button>';
+    if (p.team != null) html += captainVote(p.team);
+    return html + '</section>';
+  }
+
+  function captainVote(ti) {
+    var t = S.teams[ti], ms = members(ti), myVote = t.votes && t.votes[pid];
+    var tally = t.tally || {};
+    var html = '<div class="capvote" style="' + teamStyle(ti) + '"><h2 class="h3">Выберите капитана команды</h2>' +
+      '<p class="muted small">Капитан один вводит ответы, ставит проекты на карту и делает ставки за всю команду. Остальные помогают советом. Голосуйте за любого, можно за себя.</p><ul class="voters">';
+    ms.forEach(function (m) {
+      var n = tally[m.id] || 0, lead = t.leader === m.id;
+      html += '<li class="' + (lead ? 'leader' : '') + '"><span class="vname">' + (lead ? '<span class="crown" aria-hidden="true"></span>' : '') + esc(m.name) + (m.id === pid ? ' <span class="muted small">(вы)</span>' : '') + '</span>' +
+        '<span class="vcount" aria-label="Голосов: ' + n + '">' + '<i></i>'.repeat(n) + '</span>' +
+        '<button class="btn small' + (myVote === m.id ? ' primary' : '') + '" data-act="vote" data-pid="' + m.id + '"' + (ui.busy ? ' disabled' : '') + '>' + (myVote === m.id ? 'Ваш голос' : 'Голосовать') + '</button></li>';
     });
-    html += '</div>' + (p.team != null ? '<button class="link" data-act="pickTeam" data-team="">Выйти из команды</button>' : '') + '</section>';
+    html += '</ul><p class="small muted">Сейчас лидирует: <b>' + esc(captainName(ti)) + '</b>. Капитан закрепится, когда ведущий перейдёт к мирам.</p></div>';
     return html;
   }
 
@@ -569,16 +623,20 @@
 
   function field(t, key, label, hint, rows) {
     var e = t.edits && t.edits[key];
+    if (!isCaptain(t)) {
+      return '<div class="field ro"><p class="lbl">' + label + '</p>' + (hint ? '<p class="hint">' + hint + '</p>' : '') +
+        '<div class="rotext">' + (t[key] ? esc(t[key]) : '<span class="muted">Капитан ещё не написал. Подскажите ему!</span>') + '</div></div>';
+    }
     var saving = drafts['f:' + key] !== undefined;
     return '<div class="field"><label class="lbl" for="f-' + key + '">' + label + '</label>' + (hint ? '<p class="hint">' + hint + '</p>' : '') +
       (rows === 1 ? '<input id="f-' + key + '" class="inp" data-key="f:' + key + '" data-field="' + key + '" maxlength="60" value="' + esc(t[key]) + '">'
         : '<textarea id="f-' + key + '" class="inp" rows="' + (rows || 3) + '" data-key="f:' + key + '" data-field="' + key + '" maxlength="600">' + esc(t[key]) + '</textarea>') +
-      '<p class="meta">' + (saving ? 'Сохраняем…' : e ? 'Последняя правка: ' + esc(e.by) : 'Пишите вместе — текст виден всей команде') + '</p></div>';
+      '<p class="meta">' + (saving ? 'Сохраняем…' : e ? 'Сохранено' : 'Команда видит текст на своих телефонах') + '</p></div>';
   }
 
   function viewWorldPlayer(t) {
     return '<section class="pad">' + worldCard(t.world, { kicker: tLabel(t.id) + ' получила мир' }) +
-      '<h2 class="h3">Задание команды</h2><p class="muted">Представьте, что этот мир наступил. Что он значит для города? Пишите коротко и по делу.</p>' +
+      '<h2 class="h3">Задание команды</h2><p class="muted">Представьте, что этот мир наступил. Что он значит для города? Пишите коротко и по делу.</p>' + captainBanner(t) +
       field(t, 'title', 'Своё название мира', 'Например, «Город инженеров» или «Тихая гавань»', 1) +
       field(t, 'residents', 'Что изменится для жителей', '', 3) +
       field(t, 'business', 'Что изменится для бизнеса', '', 3) +
@@ -601,7 +659,8 @@
     var effSum = placed.reduce(function (a, p) { var r = eff(t.id, p); return a + (r ? r.v : 0); }, 0);
     var html = '<section class="pad">' +
       '<div class="maphead"><h1 class="h2">Город в мире «' + esc(tName(t.id)) + '»</h1><p class="muted">Выберите ' + limit + ' проектов, которые нужны городу в вашем мире, и поставьте их на карту. Место имеет значение: после отправки плана жители оценят, где вы строите, — штрафы и бонусы войдут в итог.</p></div>' +
-      mapBox({ pins: pins, pick: !!pend }, pend ? 'picking' : '');
+      captainBanner(t) + mapBox({ pins: pins, pick: !!pend }, pend ? 'picking' : '');
+    var cap = isCaptain(t);
     if (pend) {
       html += '<div class="pickbar" role="status"><p>Куда поставить «' + esc(pend.name) + '»? Нажмите на зону на карте или выберите здесь:</p><div class="zonechips">' +
         Object.keys(G.zones).map(function (z) { return '<button class="chip zbtn" data-act="placeZone" data-zone="' + z + '"' + (ui.busy ? ' disabled' : '') + '>' + esc(G.zones[z].name) + '</button>'; }).join('') +
@@ -612,7 +671,7 @@
       html += '<ol class="placed">' + placed.map(function (p, i) {
         var r = eff(t.id, p);
         return '<li class="' + (r ? (r.v < 0 ? 'neg' : 'pos') : '') + '"><span class="num" style="--c:' + tColor(t.id) + '">' + (i + 1) + '</span><div class="pbody"><b>' + esc(G.projects[p].name) + '</b><span class="muted small">' + esc(G.zones[t.placements[p]].name) + '</span>' + effectHtml(r) + '</div>' +
-          (t.submitted ? '' : '<span class="acts"><button class="link" data-act="pick" data-project="' + p + '">Переставить</button><button class="link" data-act="unplace" data-project="' + p + '">Убрать</button></span>') + '</li>';
+          (t.submitted || !cap ? '' : '<span class="acts"><button class="link" data-act="pick" data-project="' + p + '">Переставить</button><button class="link" data-act="unplace" data-project="' + p + '">Убрать</button></span>') + '</li>';
       }).join('') + '</ol>';
     }
     if (t.submitted) {
@@ -621,10 +680,10 @@
       html += '<h2 class="h3">Библиотека проектов</h2><ul class="projects">' + Object.keys(G.projects).map(function (p) {
         var pr = G.projects[p], on = !!t.placements[p];
         return '<li class="proj' + (on ? ' on' : '') + (ui.pending === p ? ' sel' : '') + '"><div><span class="tag">' + esc(pr.tag) + '</span><h3>' + esc(pr.name) + '</h3><p>' + esc(pr.text) + '</p></div>' +
-          (on ? '<span class="state">На карте</span>' : '<button class="btn small" data-act="pick" data-project="' + p + '"' + (full || ui.busy ? ' disabled' : '') + '>' + (full ? 'Лимит ' + limit : 'Поставить') + '</button>') + '</li>';
+          (on ? '<span class="state">На карте</span>' : cap ? '<button class="btn small" data-act="pick" data-project="' + p + '"' + (full || ui.busy ? ' disabled' : '') + '>' + (full ? 'Лимит ' + limit : 'Поставить') + '</button>' : '') + '</li>';
       }).join('') + '</ul>';
       html += field(t, 'rationale', 'Почему именно эти проекты?', 'Одно-два предложения: как они помогают городу в вашем мире', 3);
-      html += '<button class="btn primary wide" data-act="submitMap"' + (placed.length === 0 || ui.busy ? ' disabled' : '') + '>Отправить план команды</button><p class="hint center">После отправки план нельзя менять — договоритесь в команде.</p>';
+      if (cap) html += '<button class="btn primary wide" data-act="submitMap"' + (placed.length === 0 || ui.busy ? ' disabled' : '') + '>Отправить план команды</button><p class="hint center">После отправки план нельзя менять — договоритесь в команде.</p>';
     }
     return html + '</section>';
   }
@@ -644,37 +703,41 @@
       mapBox({ pins: allPins() }) + overlayList() + '</section>';
   }
 
+  function committed(t, except) {
+    return (S.auction.open || []).reduce(function (a, lot) { if (lot.project === except) return a; var b = lot.bids[t.id]; return a + (b && b.amount ? b.amount : 0); }, 0);
+  }
+
   function viewAuctionPlayer(t) {
-    var cur = S.auction.current;
+    var open = S.auction.open || [];
     var sold = S.auction.results;
     var mine = sold.filter(function (r) { return r.team === t.id; });
-    var html = '<section class="pad"><div class="budget" style="' + teamStyle(t.id) + '"><span>Бюджет команды</span><b>' + t.budget + '</b><span>' + plural(t.budget, 'монета', 'монеты', 'монет') + '</span></div>';
-    if (cur) {
-      var pr = G.projects[cur.project];
-      var ov = overlayData().filter(function (x) { return x.project === cur.project; })[0];
-      var open = now() < cur.endsAt + 1500;
-      if (ui.lotSeen !== cur.project) { ui.lotSeen = cur.project; ui.bid = Math.min(t.budget, 10); }
-      var b = t.bid;
-      var myZone = t.placements[cur.project];
-      html += '<article class="lot"><div class="lothead"><div><span class="tag">' + esc(pr.tag) + '</span><h2 class="h2">' + esc(pr.name) + '</h2></div>' + countdownHtml(cur, false) + '</div><p>' + esc(pr.text) + '</p>' +
-        '<p class="small muted">На картах выбрали: ' + dots(ov ? ov.teams : []) + '</p>' +
-        (myZone ? '<p class="small">На вашей карте: <b>' + esc(G.zones[myZone].name) + '</b></p>' + effectHtml(eff(t.id, cur.project)) : '') + '</article>';
-      if (open) {
-        var v = Math.max(0, Math.min(t.budget, ui.bid == null ? 10 : ui.bid));
-        html += '<div class="bidbox"><p class="lbl">Ставка команды</p><div class="stepper">' +
-          '<button class="btn round" data-act="bidStep" data-d="-5" aria-label="Минус 5">−5</button><output class="bidval">' + v + '</output>' +
-          '<button class="btn round" data-act="bidStep" data-d="5" aria-label="Плюс 5">+5</button><button class="btn round" data-act="bidStep" data-d="25" aria-label="Плюс 25">+25</button></div>' +
-          '<div class="bidacts"><button class="btn primary" data-act="bid"' + (v < 5 || ui.busy ? ' disabled' : '') + '>Поставить ' + v + '</button><button class="btn" data-act="pass"' + (ui.busy ? ' disabled' : '') + '>Пас</button></div>' +
-          '<p class="meta">' + (b ? (b.pass ? 'Команда пасует' : 'Ставка команды: <b>' + b.amount + '</b>') + (b.by ? ' — ' + esc(b.by) : '') + '. Можно изменить до конца времени.' : 'Ставки закрытые: другие команды не видят сумму. Побеждает самая высокая ставка.') + '</p></div>';
-      } else {
-        html += '<div class="notice">Время вышло, подводим итог…</div>';
-      }
-      html += '<div class="others">' + S.teams.map(function (tt) {
-        return '<span class="ob' + (tt.bid ? ' made' : '') + '" style="' + teamStyle(tt.id) + '">' + tNo(tt.id) + (tt.bid ? ' ✓' : '') + '</span>';
-      }).join('') + '<span class="muted small">— кто уже сделал ставку</span></div>';
+    var cap = isCaptain(t);
+    var free = t.budget - committed(t);
+    var html = '<section class="pad"><div class="budget" style="' + teamStyle(t.id) + '"><span>Бюджет</span><b>' + t.budget + '</b><span>' + plural(t.budget, 'монета', 'монеты', 'монет') + (open.length ? ' · свободно ' + free : '') + '</span></div>' + captainBanner(t);
+    if (open.length) {
+      html += '<p class="muted small">Открыто лотов: ' + open.length + '. Ставки закрытые. Сумма ставок по всем открытым лотам не может быть больше бюджета.</p>';
+      open.forEach(function (lot) {
+        var pr = G.projects[lot.project];
+        var ov = overlayData().filter(function (x) { return x.project === lot.project; })[0];
+        var isOpen = now() < lot.endsAt + 1500;
+        var b = lot.bids[t.id];
+        if (ui.bids[lot.project] == null) ui.bids[lot.project] = b && b.amount ? b.amount : 10;
+        var v = Math.max(0, Math.min(t.budget, ui.bids[lot.project]));
+        var myZone = t.placements[lot.project];
+        html += '<article class="lot"><div class="lothead"><div><span class="tag">' + esc(pr.tag) + '</span><h2 class="h2">' + esc(pr.name) + '</h2></div>' + countdownHtml(lot, false) + '</div><p>' + esc(pr.text) + '</p>' +
+          '<p class="small muted">На картах выбрали: ' + dots(ov ? ov.teams : []) + (myZone ? ' · у вас — ' + esc(G.zones[myZone].name) : '') + '</p>' + effectHtml(myZone ? eff(t.id, lot.project) : null);
+        if (isOpen && cap) {
+          html += '<div class="bidrow"><div class="stepper">' +
+            '<button class="btn round" data-act="bidStep" data-project="' + lot.project + '" data-d="-5" aria-label="Минус 5">−5</button><output class="bidval">' + v + '</output>' +
+            '<button class="btn round" data-act="bidStep" data-project="' + lot.project + '" data-d="5" aria-label="Плюс 5">+5</button><button class="btn round" data-act="bidStep" data-project="' + lot.project + '" data-d="25" aria-label="Плюс 25">+25</button></div>' +
+            '<div class="bidacts"><button class="btn primary" data-act="bid" data-project="' + lot.project + '"' + (v < 5 || ui.busy ? ' disabled' : '') + '>Поставить ' + v + '</button><button class="btn" data-act="pass" data-project="' + lot.project + '"' + (ui.busy ? ' disabled' : '') + '>Пас</button></div></div>';
+        }
+        html += '<p class="meta">' + (b ? (b.pass ? 'Команда пасует' : 'Ставка команды: <b>' + b.amount + '</b>') + (cap ? '. Можно изменить до конца времени.' : '') : isOpen ? (cap ? 'Ставки закрытые: побеждает самая высокая.' : 'Капитан ещё не сделал ставку.') : 'Время вышло, подводим итог…') + '</p>' +
+          '<div class="others">' + S.teams.map(function (tt) { var bb = lot.bids[tt.id]; return '<span class="ob' + (bb ? ' made' : '') + '" style="' + teamStyle(tt.id) + '">' + tNo(tt.id) + (bb ? ' ✓' : '') + '</span>'; }).join('') + '</div></article>';
+      });
     } else {
-      var last = sold[sold.length - 1];
-      html += '<div class="notice">' + (last ? resultText(last) + '. ' : '') + 'Ждём следующий лот.</div>';
+      var last = sold.slice(-3).reverse();
+      html += '<div class="notice">' + (last.length ? last.map(resultText).join('<br>') + '<br>' : '') + 'Ждём следующие лоты.</div>';
     }
     html += '<h2 class="h3">Куплено командой</h2>' + (mine.length ? '<ul class="bought">' + mine.map(function (r) { return '<li>' + esc(G.projects[r.project].name) + '<span>' + r.price + '</span></li>'; }).join('') + '</ul>' : '<p class="muted">Пока ничего. Неиспользованные монеты в конце сгорают — как бюджет в конце года.</p>');
     return html + '</section>';
@@ -699,36 +762,96 @@
     html += '<ul class="bought score-list">' + sc.projects.map(function (pp) {
       var base = S.payoff[pp.project][wi], v = withShock ? pp.value : base + pp.place;
       var r = pp.place ? { v: pp.place, text: pp.placeText } : null;
-      return '<li><div><b>' + esc(G.projects[pp.project].name) + '</b><span class="small muted">в этом мире ' + signed(base) + (pp.place ? ' · место ' + signed(pp.place) : '') + (withShock && v !== base + pp.place ? ' · шок ' + signed(v - base - pp.place) : '') + '</span>' +
+      return '<li><div><b>' + esc(G.projects[pp.project].name) + '</b><span class="small muted">в этом мире ' + signed(base) + (pp.place ? ' · место ' + signed(pp.place) : '') + (withShock && pp.shock ? ' · шоки ' + signed(pp.shock) : '') + '</span>' +
         (r && r.v < 0 ? '<span class="small neg">' + esc(r.text) + '</span>' : '') + '</div><span class="' + (v > 0 ? 'pos' : v < 0 ? 'neg' : '') + '">' + signed(v) + '</span></li>';
     }).join('') + '</ul>';
     return html;
   }
 
+  // ---------- шоки: кубик и карты ----------
+  var DICE_MS = 2600;
+  function diceHtml(size) {
+    var face = function (n, cls) {
+      var pips = n === 1 ? '<i class="c"></i>' : '<i class="tl"></i><i class="br"></i>';
+      return '<div class="face ' + cls + '">' + pips + '</div>';
+    };
+    var v = S.dice ? S.dice.value : 1, o = v === 1 ? 2 : 1;
+    return '<div class="dicewrap" style="--ds:' + size + 'px"><div class="dice" id="dice">' +
+      face(v, 'f1') + face(o, 'f2') + face(v, 'f3') + face(o, 'f4') + face(v, 'f5') + face(o, 'f6') + '</div></div>';
+  }
+  function diceDone() { return S.dice && now() - S.dice.at >= DICE_MS; }
+  function diceAngle() {
+    if (!S.dice) return [-20, 30];
+    var h = 0; String(S.dice.id || '').split('').forEach(function (ch) { h = (h * 31 + ch.charCodeAt(0)) % 997; });
+    var t = Math.min(1, Math.max(0, (now() - S.dice.at) / DICE_MS));
+    var e = 1 - Math.pow(1 - t, 3);
+    var spinsX = 4 + (h % 3), spinsY = 3 + (h % 2);
+    return [360 * spinsX * e, 360 * spinsY * e];
+  }
+
+  function shockIcon(kind) {
+    var svg = {
+      flood: '<path class="sw1" d="M8,62 Q22,52 36,62 T64,62 T92,62 T120,62 L120,96 L8,96Z"/><path class="sw2" d="M8,72 Q22,62 36,72 T64,72 T92,72 T120,72 L120,96 L8,96Z"/><rect x="40" y="26" width="26" height="30" class="sh"/><path d="M36,28 L53,14 L70,28Z" class="sr"/><rect x="78" y="36" width="20" height="20" class="sh"/>',
+      grant: '<circle cx="64" cy="54" r="28" class="sc"/><text x="64" y="66" text-anchor="middle" class="st">₽</text><circle cx="28" cy="80" r="10" class="sc f1"/><circle cx="100" cy="30" r="8" class="sc f2"/>',
+      remote: '<rect x="22" y="26" width="84" height="52" rx="6" class="sh"/><rect x="30" y="34" width="68" height="36" class="ss"/><rect x="14" y="80" width="100" height="8" rx="4" class="sr"/><path class="sig" d="M58,52 a8,8 0 0 1 12,0 M52,46 a16,16 0 0 1 24,0"/>',
+      steel: '<path d="M24,70 L44,44 L104,44 L84,70Z" class="sr"/><path d="M24,70 L84,70 L84,80 L24,80Z" class="sh"/><line x1="18" y1="22" x2="110" y2="96" class="sx"/><line x1="110" y1="22" x2="18" y2="96" class="sx"/>',
+      demo: '<rect x="18" y="30" width="16" height="56" class="bar1"/><rect x="42" y="42" width="16" height="44" class="bar2"/><rect x="66" y="56" width="16" height="30" class="bar3"/><rect x="90" y="70" width="16" height="16" class="bar4"/><path d="M16,24 L108,64" class="trend"/>',
+    }[kind] || '';
+    return '<svg class="shicon ' + kind + '" viewBox="0 0 128 100" aria-hidden="true">' + svg + '</svg>';
+  }
+
+  function shockCards(big) {
+    if (!S.dice) return '';
+    var n = S.dice.value, out = '<div class="shockcards n' + n + '">';
+    for (var i = 0; i < n; i++) {
+      var k = S.shocks[i];
+      if (k) {
+        var sh = G.shocks[k], fresh = i === S.shocks.length - 1 && now() - (S.shockAt || 0) < 1500;
+        out += '<article class="shock card' + (big ? ' big' : '') + (fresh ? ' fresh' : '') + '"><span class="shk">Шок ' + (i + 1) + ' из ' + n + '</span>' + shockIcon(sh.icon) + '<h2 class="' + (big ? 'title' : 'h2') + '">' + esc(sh.name) + '</h2><p class="' + (big ? 'lead' : '') + '">' + esc(sh.text) + '</p></article>';
+      } else {
+        out += '<article class="shock card back' + (big ? ' big' : '') + '"><span class="q">?</span><p>Шок ' + (i + 1) + ' ещё не вытянут</p></article>';
+      }
+    }
+    return out + '</div>';
+  }
+
+  function shockStage(big) {
+    if (!S.dice) return '<div class="center"><h1 class="' + (big ? 'title xl' : 'h2') + '">Сколько шоков ждёт город?</h1><p class="' + (big ? 'lead' : 'muted') + '">Ведущий бросит кубик: выпадет 1 или 2.</p>' + diceHtml(big ? 180 : 110) + '</div>';
+    if (!diceDone()) return '<div class="center"><h1 class="' + (big ? 'title xl' : 'h2') + '">Бросаем кубик…</h1>' + diceHtml(big ? 180 : 110) + '</div>';
+    return '<div class="dicehead">' + diceHtml(big ? 90 : 56) + '<h1 class="' + (big ? 'title' : 'h2') + '">' + (S.dice.value === 1 ? 'Городу выпал один шок' : 'Городу выпало два шока') + '</h1></div>' + shockCards(big);
+  }
+
   function viewShockPlayer(t) {
-    var sh = S.shock ? G.shocks[S.shock] : null;
-    var html = '<section class="pad">';
-    if (sh) html += '<article class="shock"><span class="shk">Неожиданное событие</span><h1 class="h2">' + esc(sh.name) + '</h1><p>' + esc(sh.text) + '</p></article>';
-    if (S.score) html += scoreBlock(t, S.score.teams[t.id], true);
-    html += field(t, 'shockAnswer', 'Как вы скорректируете стратегию?', 'Что бы вы купили или не купили, зная про это событие? Был ли среди ваших «ранних признаков» намёк на него?', 4);
+    var html = '<section class="pad">' + shockStage(false);
+    if (S.score && S.shocks.length && diceDone()) html += scoreBlock(t, S.score.teams[t.id], true) + captainBanner(t) +
+      field(t, 'shockAnswer', 'Как вы скорректируете стратегию?', 'Что бы вы купили или не купили, зная про эти события? Был ли среди ваших «ранних признаков» намёк на них?', 4);
     return html + '</section>';
   }
 
   function ranking() {
-    var arr = S.score.teams.slice().sort(function (a, b) { return b.actual - a.actual || b.min - a.min || b.avg - a.avg; });
+    var pts = S.points.teams.slice().sort(function (a, b) { return a.place - b.place; });
     var withProj = S.score.teams.filter(function (x) { return x.projects.length > 0; });
     var robust = (withProj.length ? withProj : S.score.teams).slice().sort(function (a, b) { return b.min - a.min || b.avg - a.avg; })[0];
-    return { arr: arr, robust: robust };
+    var best = S.score.teams.slice().sort(function (a, b) { return b.actual - a.actual || b.min - a.min; })[0];
+    return { arr: pts, robust: robust, best: best };
+  }
+
+  function pointsFormula(tp) {
+    return '50 ' + (tp.actual >= 0 ? '+ ' : '− ') + Math.abs(10 * tp.actual) + ' ' + (tp.min >= 0 ? '+ ' : '− ') + Math.abs(10 * tp.min) + (50 + 10 * tp.actual + 10 * tp.min < 10 ? ' → минимум 10' : '');
   }
 
   function viewResultsPlayer(t) {
-    if (!S.score) return '<section class="pad center"><h1 class="h2">Игра окончена</h1><p class="muted">Спасибо!</p></section>';
-    var rk = ranking();
-    var place = rk.arr.map(function (x) { return x.team; }).indexOf(t.id) + 1;
-    var sc = S.score.teams[t.id];
-    return '<section class="pad"><div class="score" style="' + teamStyle(t.id) + '"><span>Место: ' + tLabel(t.id).toLowerCase() + '</span><b>' + place + '</b><span>из ' + S.teams.length + '</span></div>' +
-      '<p>В наступившем мире' + (S.shock ? ' с учётом шока' : '') + ': <b>' + signed(sc.actual) + '</b>. В худшем из пяти миров ваша стратегия дала бы <b>' + signed(sc.min) + '</b>' + (rk.robust.team === t.id ? ' — <b>это самая устойчивая стратегия</b>.' : '.') + '</p>' +
-      '<h2 class="h3">Ваши проекты во всех мирах</h2>' + worldsTable(sc.projects, t.id) + '</section>';
+    if (!S.score || !S.points) return '<section class="pad center"><h1 class="h2">Итоги считаются…</h1></section>';
+    var tp = S.points.teams[t.id], sc = S.score.teams[t.id], rk = ranking();
+    var html = '<section class="pad"><div class="placecard" style="' + teamStyle(t.id) + '"><span class="pl">' + tp.place + '</span><div><p class="small">место из ' + S.teams.length + '</p><h1 class="h2">' + (tp.place === 1 ? 'Ваша команда победила!' : tLabel(t.id)) + '</h1><p><b>' + tp.points + '</b> ' + plural(tp.points, 'балл', 'балла', 'баллов') + ' за игру</p></div></div>' +
+      '<div class="formula"><p class="lbl">Как посчитаны баллы</p><div class="frow"><span>За участие</span><b>50</b></div>' +
+      '<div class="frow"><span>10 × результат в наступившем мире (' + signed(sc.actual) + ')</span><b>' + signed(10 * sc.actual) + '</b></div>' +
+      '<div class="frow"><span>10 × результат в худшем из миров (' + signed(sc.min) + ')</span><b>' + signed(10 * sc.min) + '</b></div>' +
+      '<div class="frow total"><span>Итого</span><b>' + tp.points + '</b></div></div>' +
+      (rk.robust.team === t.id ? '<div class="notice ok">У вашей команды самая устойчивая стратегия: лучший результат даже в худшем мире.</div>' : '') +
+      '<p class="muted">Каждый игрок команды получает эти баллы лично. Дальше — финальная ставка: ими можно рискнуть.</p>' +
+      '<h2 class="h3">Ваши проекты во всех мирах</h2>' + worldsTable(sc.projects) + '</section>';
+    return html;
   }
 
   function worldsTable(projects) {
@@ -768,15 +891,23 @@
     else if (ph === 'auction') body = screenAuction();
     else if (ph === 'reveal') body = screenReveal();
     else if (ph === 'shock') body = screenShock();
+    else if (ph === 'bet') body = screenBet();
+    else if (ph === 'final') body = screenFinal();
     else body = screenResults();
     return '<div class="screen"><header class="sbar"><span class="logo">Город в 5 мирах · ' + G.city + '</span>' + route(ph) + '</header><main class="sbody">' + body + '</main></div>';
   }
 
   function screenIntro() {
     var step = S.introStep || 0, sl = G.intro[step];
-    return '<div class="sintro"><canvas class="swarm" data-step="' + step + '" aria-hidden="true"></canvas>' +
-      '<div class="ipanel"><p class="istep">' + (step + 1) + ' / ' + G.intro.length + '</p><h1 class="title xl">' + esc(sl.title) + '</h1><p class="lead">' + esc(sl.text) + '</p>' +
-      '<ul class="ipoints">' + sl.points.map(function (p) { return '<li>' + esc(p) + '</li>'; }).join('') + '</ul></div>' +
+    var body;
+    if (sl.layout === 'rules') {
+      body = '<div class="ipanel rules"><p class="istep">' + (step + 1) + ' / ' + G.intro.length + '</p><h1 class="title xl">' + esc(sl.title) + '</h1><p class="lead">' + esc(sl.text) + '</p>' +
+        '<ol class="rulelist">' + sl.steps.map(function (x) { return '<li><b>' + esc(x[0]) + '</b><span>' + esc(x[1]) + '</span></li>'; }).join('') + '</ol></div>';
+    } else {
+      body = '<div class="ipanel"><p class="istep">' + (step + 1) + ' / ' + G.intro.length + '</p><h1 class="title xl">' + esc(sl.title) + '</h1><p class="lead">' + esc(sl.text) + '</p>' +
+        '<ul class="ipoints">' + sl.points.map(function (p) { return '<li>' + esc(p) + '</li>'; }).join('') + '</ul>' + (sl.source ? '<p class="isource">' + esc(sl.source) + '</p>' : '') + '</div>';
+    }
+    return '<div class="sintro' + (sl.layout === 'rules' ? ' is-rules' : '') + '"><canvas class="swarm" data-step="' + (sl.swarm || 0) + '" aria-hidden="true"></canvas>' + body +
       '<p class="ibrand">Город в 5 мирах · форсайт-сессия</p></div>';
   }
 
@@ -810,10 +941,13 @@
   function screenTeams() {
     var free = players().filter(function (p) { return p.team == null; });
     return '<div class="steams">' + S.teams.map(function (t) {
-      var m = members(t.id);
-      return '<div class="scol" style="' + teamStyle(t.id) + '"><span class="tl">' + tNo(t.id) + '</span><p class="tc">' + m.length + ' / ' + S.teamSize + '</p><ul>' + m.map(function (x) { return '<li>' + esc(x.name) + '</li>'; }).join('') + '</ul></div>';
+      var m = members(t.id), tally = t.tally || {};
+      return '<div class="scol" style="' + teamStyle(t.id) + '"><span class="tl">' + tNo(t.id) + '</span><p class="tc">' + m.length + ' / ' + S.teamSize + '</p><ul>' + m.map(function (x) {
+        var lead = t.leader === x.id;
+        return '<li class="' + (lead ? 'leader' : '') + '">' + (lead ? '<span class="crown" aria-hidden="true"></span>' : '') + esc(x.name) + (tally[x.id] ? '<span class="vc">' + tally[x.id] + '</span>' : '') + '</li>';
+      }).join('') + '</ul></div>';
     }).join('') + '</div>' + (free.length ? '<p class="sfree">Без команды: ' + free.map(function (p) { return esc(p.name); }).join(', ') + '</p>' : '') +
-      (S.teamMode === 'self' ? '<p class="shint">Выберите команду на телефоне. Миры раздадим случайно.</p>' : '');
+      '<p class="shint">' + (S.teamMode === 'self' ? 'Выберите команду на телефоне, затем проголосуйте за капитана.' : 'Проголосуйте на телефоне за капитана команды.') + ' Корона — у лидера голосования.</p>';
   }
 
   function cell(wid) {
@@ -846,22 +980,25 @@
   }
 
   function screenAuction() {
-    var cur = S.auction.current, res = S.auction.results;
-    var left = '';
-    if (cur) {
-      var pr = G.projects[cur.project];
-      var ov = overlayData().filter(function (x) { return x.project === cur.project; })[0];
-      left = '<div class="slot"><span class="tag">Лот ' + (res.length + 1) + ' · ' + esc(pr.tag) + '</span><h1 class="title">' + esc(pr.name) + '</h1><p class="lead">' + esc(pr.text) + '</p><p>На картах выбрали: ' + dots(ov ? ov.teams : []) + '</p>' + countdownHtml(cur, true) + '</div>';
+    var open = S.auction.open || [], res = S.auction.results;
+    var left;
+    if (open.length) {
+      left = '<div class="lotgrid n' + Math.min(open.length, 4) + '">' + open.map(function (lot) {
+        var pr = G.projects[lot.project];
+        var ov = overlayData().filter(function (x) { return x.project === lot.project; })[0];
+        return '<div class="slot mini"><span class="tag">' + esc(pr.tag) + '</span><h2 class="stitle">' + esc(pr.name) + '</h2><p class="small">На картах: ' + dots(ov ? ov.teams : []) + '</p>' +
+          '<div class="slotfoot">' + countdownHtml(lot, open.length <= 2) + '<div class="bidchips">' + S.teams.map(function (t) { var b = lot.bids[t.id]; return '<span class="ob' + (b ? ' made' : '') + '" style="' + teamStyle(t.id) + '">' + tNo(t.id) + (b ? ' ✓' : '') + '</span>'; }).join('') + '</div></div></div>';
+      }).join('') + '</div>';
+    } else if (res.length) {
+      left = '<div class="slot"><h1 class="title">Итоги торгов</h1><ul class="lastres">' + res.slice(-6).reverse().map(function (r) {
+        return '<li><span>' + esc(G.projects[r.project].name) + '</span>' + (r.team != null ? '<b style="' + teamStyle(r.team) + '" class="win">' + tLabel(r.team) + ' · ' + r.price + '</b>' : '<b class="none">не продан</b>') + '</li>';
+      }).join('') + '</ul></div>';
     } else {
-      var last = res[res.length - 1];
-      left = '<div class="slot">' + (last ? '<span class="tag">Лот ' + res.length + ' закрыт</span><h1 class="title">' + esc(G.projects[last.project].name) + '</h1>' +
-        (last.team != null ? '<p class="winner" style="' + teamStyle(last.team) + '">Покупает <b>' + tLabel(last.team).toLowerCase() + '</b> за ' + last.price + '</p>' : '<p class="lead">Никто не сделал ставку — проект не будет построен.</p>') +
-        '<p class="small muted">Ставки: ' + S.teams.map(function (t) { var b = last.bids[t.id]; return tNo(t.id) + ' — ' + (b == null ? 'нет' : b === 0 ? 'пас' : b); }).join(', ') + '</p>'
-        : '<h1 class="title">Аукцион проектов</h1><p class="lead">У каждой команды ' + G.budget + ' монет. Ставки закрытые, побеждает самая высокая. Неиспользованные монеты в конце сгорают.</p>') + '</div>';
+      left = '<div class="slot"><h1 class="title">Аукцион проектов</h1><p class="lead">У каждой команды ' + G.budget + ' монет. Ставки закрытые, побеждает самая высокая. Можно торговаться за несколько лотов сразу. Неиспользованные монеты в конце сгорают.</p></div>';
     }
     var right = '<div class="steamsbar">' + S.teams.map(function (t) {
       var won = res.filter(function (r) { return r.team === t.id; }).length;
-      return '<div class="tbud' + (cur && t.bid ? ' made' : '') + '" style="' + teamStyle(t.id) + '"><span class="tl s">' + tNo(t.id) + '</span><span class="tb">' + t.budget + '<small>' + plural(t.budget, 'монета', 'монеты', 'монет') + '</small></span><span class="small">' + won + ' ' + plural(won, 'проект', 'проекта', 'проектов') + '</span>' + (cur ? '<span class="bstat">' + (t.bid ? 'ставка есть' : '…') + '</span>' : '') + '</div>';
+      return '<div class="tbud" style="' + teamStyle(t.id) + '"><span class="tl s">' + tNo(t.id) + '</span><span class="tb">' + t.budget + '<small>' + plural(t.budget, 'монета', 'монеты', 'монет') + '</small></span><span class="small">' + won + ' ' + plural(won, 'проект', 'проекта', 'проектов') + '</span></div>';
     }).join('') + '</div>';
     return '<div class="sauction">' + left + right + '</div>';
   }
@@ -876,33 +1013,123 @@
 
   function scoreboard(withShock) {
     var arr = S.score.teams.slice().sort(function (a, b) { return (withShock ? b.actual - a.actual : b.base - a.base); });
-    return '<h2 class="h2">Результаты команд</h2><ol class="board">' + arr.map(function (x) {
+    return '<h2 class="h2">Результаты команд' + (withShock && S.shocks && S.shocks.length ? ' с учётом шоков' : '') + '</h2><ol class="board">' + arr.map(function (x) {
       var v = withShock ? x.actual : x.base;
+      var d = withShock ? x.actual - x.base : 0;
       var bad = x.projects.filter(function (p) { return p.place < 0; }).length;
-      return '<li style="' + teamStyle(x.team) + '"><span class="tl s">' + tNo(x.team) + '</span><span class="bn">' + esc(tName(x.team)) + '<small>' + (x.projects.map(function (p) { return esc(G.projects[p.project].name); }).join(', ') || 'ничего не купили') + (bad ? ' · штрафы за место: ' + bad : '') + '</small></span><b>' + signed(v) + '</b></li>';
+      return '<li style="' + teamStyle(x.team) + '"><span class="tl s">' + tNo(x.team) + '</span><span class="bn">' + esc(tName(x.team)) + '<small>' + (x.projects.map(function (p) { return esc(G.projects[p.project].name); }).join(', ') || 'ничего не купили') + (bad ? ' · штрафы за место: ' + bad : '') + '</small></span>' +
+        (d ? '<span class="delta ' + (d < 0 ? 'neg' : 'pos') + '">' + signed(d) + '</span>' : '') + '<b>' + signed(v) + '</b></li>';
     }).join('') + '</ol>';
   }
 
   function screenShock() {
-    var sh = S.shock ? G.shocks[S.shock] : null;
-    return '<div class="ssplit"><div>' + (sh ? '<article class="shock big"><span class="shk">Неожиданное событие</span><h1 class="title">' + esc(sh.name) + '</h1><p class="lead">' + esc(sh.text) + '</p></article>' : '') + '</div><div>' + (S.score ? scoreboard(true) : '') + '</div></div>';
+    var stage = shockStage(true);
+    if (S.dice && diceDone() && S.shocks.length && S.score) return '<div class="sshock with-board"><div>' + stage + '</div><div class="shockboard">' + scoreboard(true) + '</div></div>';
+    return '<div class="sshock">' + stage + '</div>';
   }
 
   function screenResults() {
-    if (!S.score) return '<div class="center sfull"><h1 class="title xl">Итоги</h1></div>';
-    var rk = ranking();
-    return '<div class="sres"><div class="awards">' +
-      '<div class="award" style="' + teamStyle(rk.arr[0].team) + '"><span>Лучший результат в мире «' + esc(world(S.reveal.world).name) + '»' + (S.shock ? ' с учётом шока' : '') + '</span><b>' + tLabel(rk.arr[0].team) + '</b><em>' + signed(rk.arr[0].actual) + '</em></div>' +
-      '<div class="award" style="' + teamStyle(rk.robust.team) + '"><span>Самая устойчивая стратегия — лучший результат в худшем мире</span><b>' + tLabel(rk.robust.team) + '</b><em>' + signed(rk.robust.min) + '</em></div></div>' +
-      '<div class="tablewrap"><table class="wt big"><thead><tr><th>Команда</th>' + W.map(function (w) { return '<th style="' + worldStyle(w) + '"><span class="wdot">' + w + '</span><small>' + esc(world(w).name) + '</small></th>'; }).join('') + '<th>Худший</th></tr></thead><tbody>' +
-      S.score.teams.map(function (x) {
-        return '<tr><td>' + chip(x.team) + ' ' + esc(tName(x.team)) + '</td>' + x.byWorld.map(function (v, i) { return '<td class="' + (v > 0 ? 'pos' : v < 0 ? 'neg' : '') + (W[i] === S.reveal.world ? ' cur' : '') + '">' + signed(v) + '</td>'; }).join('') + '<td class="minc">' + signed(x.min) + '</td></tr>';
-      }).join('') + '</tbody></table></div><p class="small muted">Очки с учётом места на карте, без карты-шока. Столбец выделен для наступившего мира.</p></div>';
+    if (!S.score || !S.points) return '<div class="center sfull"><h1 class="title xl">Итоги</h1></div>';
+    var rk = ranking(), top = rk.arr;
+    var podium = [top[1], top[0], top[2]].filter(Boolean).map(function (tp) {
+      var x = S.score.teams[tp.team];
+      return '<div class="pod p' + tp.place + '" style="' + teamStyle(tp.team) + '"><span class="pteam">' + chip(tp.team, true) + '<b>' + esc(tName(tp.team)) + '</b></span><span class="ppts">' + tp.points + '<small>' + plural(tp.points, 'балл', 'балла', 'баллов') + '</small></span>' +
+        '<span class="pblock"><em>' + tp.place + '</em></span><span class="psub">мир ' + signed(x.actual) + ' · худший ' + signed(x.min) + '</span></div>';
+    }).join('');
+    return '<div class="sres"><div class="reshead"><h1 class="title">Победитель — ' + tLabel(top[0].team) + '</h1>' +
+      '<p class="lead">Баллы = 50 + 10 × результат в наступившем мире «' + esc(world(S.reveal.world).name) + '»' + (S.shocks && S.shocks.length ? ' с шоками' : '') + ' + 10 × результат в худшем из пяти миров. Выигрывает тот, кто и угадал, и подстраховался.</p></div>' +
+      '<div class="podium">' + podium + '</div>' +
+      '<div class="tablewrap"><table class="wt big"><thead><tr><th>Место</th><th>Команда</th><th>Наступивший мир</th><th>Худший мир</th><th>Расчёт</th><th>Баллы</th></tr></thead><tbody>' +
+      top.map(function (tp) {
+        return '<tr class="' + (tp.place === 1 ? 'win' : '') + '"><td class="pl">' + tp.place + '</td><td>' + chip(tp.team) + ' ' + esc(tName(tp.team)) + (rk.robust.team === tp.team ? ' <span class="badge">самая устойчивая</span>' : '') + (rk.best.team === tp.team ? ' <span class="badge alt">лучший в мире</span>' : '') + '</td>' +
+          '<td class="' + (tp.actual > 0 ? 'pos' : tp.actual < 0 ? 'neg' : '') + '">' + signed(tp.actual) + '</td><td class="' + (tp.min > 0 ? 'pos' : tp.min < 0 ? 'neg' : '') + '">' + signed(tp.min) + '</td>' +
+          '<td class="small">' + pointsFormula(tp) + '</td><td class="minc">' + tp.points + '</td></tr>';
+      }).join('') + '</tbody></table></div></div>';
   }
 
   // =====================================================================
   //                               ВЕДУЩИЙ
   // =====================================================================
+  // ---------- финальная ставка ----------
+  function betOptions(q, mine, revealed, ans) {
+    var L = ['А', 'Б', 'В', 'Г', 'Д'];
+    return q.options.map(function (o, i) {
+      var cls = revealed ? (i === ans.correct ? ' right' : (mine && mine.option === i ? ' wrong' : '')) : (ui.betOpt === i ? ' on' : '');
+      return '<button class="betopt' + cls + '" data-act="betOpt" data-i="' + i + '"' + (revealed ? ' disabled' : '') + '><span class="bl">' + L[i] + '</span><span><b>' + esc(o[0]) + '</b><small>' + esc(o[1]) + '</small></span></button>';
+    }).join('');
+  }
+
+  function betTable(q, ans) {
+    var L = ['А', 'Б', 'В', 'Г', 'Д'];
+    return '<div class="tablewrap"><table class="wt"><thead><tr><th>Вариант</th>' + W.map(function (w) { return '<th style="' + worldStyle(w) + '"><span class="wdot">' + w + '</span></th>'; }).join('') + '</tr></thead><tbody>' +
+      q.options.map(function (o, i) {
+        return '<tr class="' + (i === ans.correct ? 'win' : '') + '"><td>' + L[i] + '. ' + esc(o[0]) + '</td>' + ans.payoff[i].map(function (v) { return '<td class="' + (v > 0 ? 'pos' : v < 0 ? 'neg' : '') + '">' + signed(v) + '</td>'; }).join('') + '</tr>';
+      }).join('') + '</tbody></table></div>';
+  }
+
+  function viewBetPlayer(t) {
+    var mp = myPoints();
+    if (!S.bet || !mp) return '<section class="pad center"><div class="pulse"></div><h1 class="h2">Скоро финальная ставка</h1><p class="muted">Ведущий выбирает вопрос.</p></section>';
+    var q = G.bets[S.bet.qid], mine = S.bets && S.bets[pid], revealed = S.bet.revealed, ans = S.betAnswer;
+    var html = '<section class="pad"><div class="budget"><span>Ваши баллы</span><b>' + mp.base + '</b></div>' +
+      '<h1 class="h2">' + esc(q.title) + '</h1><p class="muted small">Ровно один вариант даёт плюс во всех пяти мирах. Угадали — поставленные баллы удваиваются. Ошиблись — сгорают. Не ставите — баллы не меняются.</p>' +
+      '<div class="betopts">' + betOptions(q, mine, revealed, ans) + '</div>';
+    if (!revealed) {
+      if (ui.betStake == null) ui.betStake = mine ? mine.stake : Math.min(mp.base, 10);
+      if (ui.betOpt == null && mine) ui.betOpt = mine.option;
+      var v = Math.max(0, Math.min(mp.base, ui.betStake));
+      html += '<div class="bidbox"><p class="lbl">Сколько баллов ставите?</p><input type="range" class="range" min="0" max="' + mp.base + '" step="1" value="' + v + '" data-act-change="betStake" data-key="betStake" aria-label="Размер ставки">' +
+        '<div class="stepper"><button class="btn round" data-act="betStep" data-d="-10">−10</button><output class="bidval">' + v + '</output><button class="btn round" data-act="betStep" data-d="10">+10</button><button class="btn round" data-act="betAll">Всё</button></div>' +
+        '<div class="bidacts"><button class="btn primary" data-act="placeBet"' + (ui.betOpt == null || v < 1 || ui.busy ? ' disabled' : '') + '>Поставить ' + v + '</button><button class="btn" data-act="noBet"' + (ui.busy ? ' disabled' : '') + '>Не рисковать</button></div>' +
+        '<p class="meta">' + (mine ? 'Ваша ставка: <b>' + mine.stake + '</b> на вариант ' + ['А', 'Б', 'В', 'Г', 'Д'][mine.option] + '. Можно изменить, пока ведущий не раскрыл ответ.' : 'Вы пока не сделали ставку.') + '</p></div>';
+    } else {
+      html += '<div class="betres ' + (!mine ? '' : mp.delta > 0 ? 'win' : 'lose') + '"><b>' + (!mine ? 'Вы не рисковали' : mp.delta > 0 ? 'Угадали! +' + mp.delta : 'Не угадали: ' + signed(mp.delta)) + '</b><span>Итого у вас: ' + mp.total + ' ' + plural(mp.total, 'балл', 'балла', 'баллов') + '</span></div>' +
+        '<p>' + esc(q.explain) + '</p>' + betTable(q, ans);
+    }
+    return html + '</section>';
+  }
+
+  function screenBet() {
+    if (!S.bet) return '<div class="center sfull"><h1 class="title xl">Финальная ставка</h1><p class="lead">Каждый может рискнуть своими баллами: угадал — баллы удваиваются, ошибся — сгорают.</p></div>';
+    var q = G.bets[S.bet.qid], ans = S.betAnswer, revealed = S.bet.revealed;
+    var total = Object.keys(S.points ? S.points.players : {}).length;
+    var html = '<div class="sbet"><div class="bethead"><p class="istep">Финальная ставка</p><h1 class="title">' + esc(q.title) + '</h1>' +
+      (revealed ? '<p class="lead">' + esc(q.explain) + '</p>' : '<p class="lead">Ровно один вариант даёт плюс во всех пяти мирах. Угадали — баллы ×2, ошиблись — сгорают.</p><p class="count"><b>' + (S.betCount != null ? S.betCount : Object.keys(S.bets || {}).length) + '</b> из ' + total + ' уже сделали ставку</p>') + '</div>';
+    html += '<div class="betopts big">' + betOptions(q, null, revealed, ans) + '</div>';
+    if (revealed) {
+      var pl = S.points.players, won = 0, lost = 0, nw = 0, nl = 0;
+      Object.keys(pl).forEach(function (k) { var d = pl[k].delta; if (d > 0) { won += d; nw++; } if (d < 0) { lost -= d; nl++; } });
+      html += '<div class="betsum"><span class="pos">Угадали: ' + nw + ' · +' + won + '</span><span class="neg">Не угадали: ' + nl + ' · −' + lost + '</span></div>' + betTable(q, ans);
+    }
+    return html + '</div>';
+  }
+
+  function playerBoard(limit) {
+    var pl = S.points ? S.points.players : {};
+    var arr = Object.keys(pl).map(function (k) { return { pid: k, name: S.players[k] ? S.players[k].name : '?', team: pl[k].team, base: pl[k].base, delta: pl[k].delta, total: pl[k].total }; });
+    arr.sort(function (a, b) { return b.total - a.total || a.name.localeCompare(b.name); });
+    return arr.slice(0, limit || arr.length);
+  }
+
+  function viewFinalPlayer(t) {
+    var mp = myPoints();
+    if (!mp) return '<section class="pad center"><h1 class="h2">Спасибо за игру!</h1></section>';
+    var board = playerBoard(), place = board.map(function (x) { return x.pid; }).indexOf(pid) + 1;
+    return '<section class="pad"><div class="placecard" style="' + teamStyle(t.id) + '"><span class="pl">' + place + '</span><div><p class="small">место из ' + board.length + '</p><h1 class="h2">' + mp.total + ' ' + plural(mp.total, 'балл', 'балла', 'баллов') + '</h1><p class="small">за игру ' + mp.base + (mp.delta ? ' · ставка ' + signed(mp.delta) : '') + '</p></div></div>' +
+      '<h2 class="h3">Лучшие игроки</h2><ol class="pboard">' + board.slice(0, 10).map(function (x, i) { return '<li class="' + (x.pid === pid ? 'me' : '') + '"><span class="n">' + (i + 1) + '</span>' + chip(x.team) + '<span class="nm">' + esc(x.name) + '</span><b>' + x.total + '</b></li>'; }).join('') + '</ol>' +
+      '<p class="muted center">Спасибо за игру! Форсайт — это не про угадывание будущего, а про решения, которые выдержат любое.</p></section>';
+  }
+
+  function screenFinal() {
+    if (!S.points) return '<div class="center sfull"><h1 class="title xl">Финал</h1></div>';
+    var board = playerBoard(10), rk = ranking();
+    return '<div class="sfinal"><div><h1 class="title">Лучшие игроки</h1><ol class="pboard big">' + board.map(function (x, i) {
+      return '<li class="' + (i === 0 ? 'gold' : i === 1 ? 'silver' : i === 2 ? 'bronze' : '') + '"><span class="n">' + (i + 1) + '</span>' + chip(x.team) + '<span class="nm">' + esc(x.name) + '</span><span class="small">' + x.base + (x.delta ? ' ' + signed(x.delta) : '') + '</span><b>' + x.total + '</b></li>';
+    }).join('') + '</ol></div><div><h2 class="h2">Команды</h2><ol class="board">' + rk.arr.map(function (tp) {
+      return '<li style="' + teamStyle(tp.team) + '"><span class="tl s">' + tp.place + '</span><span class="bn">' + tLabel(tp.team) + ' · ' + esc(tName(tp.team)) + '</span><b>' + tp.points + '</b></li>';
+    }).join('') + '</ol><p class="lead">Спасибо за игру! Устойчивые решения выигрывают не потому, что угадали будущее, а потому, что готовы к любому.</p></div></div>';
+  }
+
   function viewHost() {
     var ph = S.phase;
     var html = '<header class="bar host"><span class="logo">Пульт ведущего</span><span class="who"><a href="#screen" target="_blank" rel="noopener" class="link">Экран проектора</a> <a href="#curator" target="_blank" rel="noopener" class="link">Оценки</a></span></header>';
@@ -924,9 +1151,10 @@
   function hostPanel(ph) {
     if (ph === 'intro') {
       var step = S.introStep || 0, sl = G.intro[step];
+      var items = sl.layout === 'rules' ? sl.steps.map(function (x) { return x[0] + ': ' + x[1]; }) : sl.points;
       return '<h2 class="h2">Заставка: что такое форсайт</h2><p class="muted">Слайды идут на экране проектора поверх анимации. Ниже — подсказка, что рассказать.</p>' +
         '<div class="row">' + G.intro.map(function (x, k) { return '<button class="btn' + (k === step ? ' primary' : '') + '" data-act="intro" data-step="' + k + '">' + (k + 1) + '. ' + esc(x.title) + '</button>'; }).join('') + '</div>' +
-        '<div class="notes"><h3 class="h3">' + esc(sl.title) + '</h3><p>' + esc(sl.text) + '</p><ul>' + sl.points.map(function (p) { return '<li>' + esc(p) + '</li>'; }).join('') + '</ul></div>' +
+        '<div class="notes"><h3 class="h3">' + esc(sl.title) + '</h3><p>' + esc(sl.text) + '</p><ul>' + items.map(function (p) { return '<li>' + esc(p) + '</li>'; }).join('') + '</ul>' + (sl.source ? '<p class="small muted">' + esc(sl.source) + '</p>' : '') + '</div>' +
         (step < G.intro.length - 1 ? '<button class="btn primary" data-act="intro" data-step="' + (step + 1) + '">Следующий слайд</button>' : '<button class="btn primary" data-act="phase" data-phase="lobby">К сбору участников</button>');
     }
     if (ph === 'lobby') return '<h2 class="h2">Сбор участников</h2><p>Покажите на проекторе экран с QR-кодом (ссылка «Экран проектора» вверху). Ссылка для игроков:</p><p class="url">' + esc(joinUrl()) + '</p><div class="qr small">' + qrSvg(joinUrl()) + '</div><p class="muted">Когда все зашли — переходите к сигналам.</p>';
@@ -946,7 +1174,8 @@
       return '<h2 class="h2">Команды</h2><div class="seg"><button class="' + (S.teamMode === 'self' ? 'on' : '') + '" data-act="teamMode" data-mode="self">Игроки выбирают сами</button><button class="' + (S.teamMode === 'host' ? 'on' : '') + '" data-act="teamMode" data-mode="host">Распределяю я</button></div>' +
         '<label class="lbl">Мест в команде <select class="inp sm" data-act-change="teamSize">' + [3, 4, 5, 6].map(function (n) { return '<option' + (n === S.teamSize ? ' selected' : '') + '>' + n + '</option>'; }).join('') + '</select></label>' +
         '<div class="row"><button class="btn primary" data-act="autoTeams" data-keep="0">Раздать всех случайно</button><button class="btn" data-act="autoTeams" data-keep="1">Раздать только тех, кто без команды</button></div>' +
-        '<div class="hteams">' + S.teams.map(function (t) { return '<div class="ht" style="' + teamStyle(t.id) + '"><b>' + tNo(t.id) + '</b> · ' + members(t.id).length + ' чел.</div>'; }).join('') + '</div><p class="muted small">Миры раздадутся командам случайно при переходе к этапу «Миры».</p>';
+        '<div class="hteams">' + S.teams.map(function (t) { return '<div class="ht" style="' + teamStyle(t.id) + '"><b>' + tNo(t.id) + '</b> · ' + members(t.id).length + ' чел.</div>'; }).join('') + '</div>' +
+        hostCaptains() + '<p class="muted small">Миры раздадутся командам случайно, а капитаны закрепятся при переходе к этапу «Миры».</p>';
     }
     if (ph === 'world') return '<h2 class="h2">Миры</h2><p class="muted">Миры розданы случайно. Команды описывают последствия и ранние признаки, на проекторе собирается сценарная матрица.</p>' +
       S.teams.map(function (t) {
@@ -967,29 +1196,73 @@
         (S.reveal ? '<p>' + (sp.done ? 'Наступил мир <b>' + S.reveal.world + ' · ' + esc(world(S.reveal.world).name) + '</b>' : 'Колесо крутится…') + '</p>' : '') +
         (S.reveal && sp.done ? scoreboard(false) : '');
     }
-    if (ph === 'shock') return '<h2 class="h2">Карта-шок</h2><p class="muted">Выберите событие — очки команд пересчитаются.</p><div class="shocks">' + Object.keys(G.shocks).map(function (k) {
-      return '<button class="shockbtn' + (S.shock === k ? ' on' : '') + '" data-act="shock" data-shock="' + k + '"><b>' + esc(G.shocks[k].name) + '</b><span>' + esc(G.shocks[k].text) + '</span></button>';
-    }).join('') + '</div><button class="btn" data-act="shock" data-shock="random">Случайная карта</button>' + (S.score && S.shock ? scoreboard(true) : '') +
-      (!S.reveal ? '<p class="notice">Сначала раскрутите колесо на этапе «Судьба».</p>' : '');
+    if (ph === 'shock') {
+      var drawn = S.shocks || [];
+      var html2 = '<h2 class="h2">Шоки</h2>' + (!S.reveal ? '<p class="notice">Сначала раскрутите колесо на этапе «Судьба».</p>' : '');
+      html2 += '<div class="row"><button class="btn primary" data-act="rollDice"' + (S.dice ? '' : '') + '>' + (S.dice ? 'Перебросить кубик' : 'Бросить кубик') + '</button>' +
+        '<label class="lbl">или задать <select class="inp sm" data-act-change="diceValue"><option value="">—</option><option value="1">1 шок</option><option value="2">2 шока</option></select></label></div>';
+      if (S.dice) {
+        html2 += '<p>На кубике: <b>' + S.dice.value + '</b>. Вытянуто шоков: <b>' + drawn.length + ' из ' + S.dice.value + '</b>.</p>';
+        if (drawn.length < S.dice.value) {
+          html2 += '<button class="btn primary" data-act="drawShock" data-shock="">Вытянуть случайный шок</button><p class="small muted">или выберите конкретный:</p><div class="shocks">' + Object.keys(G.shocks).filter(function (k) { return drawn.indexOf(k) < 0; }).map(function (k) {
+            return '<button class="shockbtn" data-act="drawShock" data-shock="' + k + '"><b>' + esc(G.shocks[k].name) + '</b><span>' + esc(G.shocks[k].text) + '</span></button>';
+          }).join('') + '</div>';
+        }
+        html2 += drawn.map(function (k, i) { return '<div class="notice">Шок ' + (i + 1) + ': <b>' + esc(G.shocks[k].name) + '</b></div>'; }).join('');
+        html2 += '<button class="link" data-act="clearShocks">Сбросить кубик и шоки</button>';
+      }
+      if (S.score && drawn.length) html2 += scoreboard(true);
+      return html2;
+    }
+    if (ph === 'bet') {
+      var hb = '<h2 class="h2">Финальная ставка</h2><p class="muted">Выберите вопрос. Каждый игрок ставит свои баллы: угадал — ×2, ошибся — сгорают.</p><div class="shocks">' + Object.keys(G.bets).map(function (k) {
+        var q = G.bets[k];
+        return '<button class="shockbtn' + (S.bet && S.bet.qid === k ? ' on' : '') + '" data-act="setBet" data-q="' + k + '"><b>' + esc(q.title) + '</b><span>' + q.options.map(function (o) { return o[0]; }).join(' · ') + '</span></button>';
+      }).join('') + '</div>';
+      if (S.bet) {
+        var nb = Object.keys(S.bets || {}).length, np = S.points ? Object.keys(S.points.players).length : 0;
+        hb += '<p>Ставок: <b>' + nb + '</b> из ' + np + '.</p>' + (S.bet.revealed ? '<div class="notice ok">Ответ раскрыт: ' + esc(G.bets[S.bet.qid].options[S.betAnswer.correct][0]) + '</div><button class="btn primary" data-act="phase" data-phase="final">К финальному рейтингу</button>' : '<button class="btn primary" data-act="revealBet">Закрыть приём и раскрыть ответ</button>');
+        hb += '<p class="small muted">Правильный ответ: ' + esc(G.bets[S.bet.qid].options[[1, 3, 2][['q1', 'q2', 'q3'].indexOf(S.bet.qid)]][0]) + ' (видно только вам)</p>';
+      }
+      return hb;
+    }
+    if (ph === 'final') return '<h2 class="h2">Финал</h2><p>На экране — рейтинг игроков после ставки.</p><div class="row"><button class="btn primary" data-act="export">Выгрузить в Google Таблицу</button><button class="btn" data-act="csv">Скачать оценки (CSV)</button></div>' + gradeSummary();
     return '<h2 class="h2">Итоги</h2><p>Сохраните оценки кураторов и результаты команд.</p><div class="row"><button class="btn primary" data-act="export">Выгрузить в Google Таблицу</button><button class="btn" data-act="csv">Скачать оценки (CSV)</button></div>' + gradeSummary() +
       '<div class="notes"><h3 class="h3">Вопросы для рефлексии</h3><ul><li>Почему команда купила именно эти проекты?</li><li>Какие проекты оказались полезны во всех мирах — и почему?</li><li>Сработали ли ваши «ранние признаки»? Можно ли было предвидеть шок?</li><li>Где форсайт упрощён в игре, а где в реальной стратегии города всё сложнее?</li></ul></div>';
   }
 
+  function hostCaptains() {
+    return '<h3 class="h3">Капитаны</h3><table class="mini"><tbody>' + S.teams.map(function (t) {
+      var ms = members(t.id), tally = t.tally || {};
+      return '<tr><td>' + chip(t.id) + '</td><td><select class="inp sm" data-act-change="setCaptain" data-team="' + t.id + '" aria-label="Капитан команды ' + tNo(t.id) + '">' +
+        '<option value="">По голосованию' + (t.leader && S.players[t.leader] ? ' — ' + esc(S.players[t.leader].name) : '') + '</option>' +
+        ms.map(function (m) { return '<option value="' + m.id + '"' + (t.captain === m.id ? ' selected' : '') + '>' + esc(m.name) + (tally[m.id] ? ' (' + tally[m.id] + ')' : '') + '</option>'; }).join('') +
+        '</select></td><td class="small muted">голосов: ' + Object.keys(t.votes || {}).length + ' из ' + ms.length + '</td></tr>';
+    }).join('') + '</tbody></table>';
+  }
+
   function hostAuction() {
-    var cur = S.auction.current, sold = soldMap();
+    var open = S.auction.open || [], sold = soldMap();
+    var openMap = {}; open.forEach(function (l) { openMap[l.project] = l; });
     var ov = {}; overlayData().forEach(function (x) { ov[x.project] = x.teams; });
     var html = '<h2 class="h2">Аукцион</h2>';
-    if (cur) {
-      html += '<div class="hlot"><div><span class="tag">Идёт лот</span><h3 class="h3">' + esc(G.projects[cur.project].name) + '</h3></div>' + countdownHtml(cur, false) + '</div>' +
-        '<table class="mini"><tbody>' + S.teams.map(function (t) { return '<tr><td>' + chip(t.id) + '</td><td>' + (t.bid ? (t.bid.amount === 0 ? 'пас' : '<b>' + t.bid.amount + '</b>') + ' <span class="muted small">' + esc(t.bid.by) + '</span>' : '<span class="muted">нет ставки</span>') + '</td><td class="muted small">бюджет ' + t.budget + '</td></tr>'; }).join('') + '</tbody></table>' +
-        '<div class="row"><button class="btn primary" data-act="closeLot">Закрыть сейчас</button><button class="btn" data-act="cancelLot">Отменить лот</button></div>';
-    }
-    html += '<div class="row"><label class="lbl">Время на лот <select class="inp sm" data-act-change="lotSeconds">' + [20, 30, 40, 60, 90].map(function (n) { return '<option value="' + n + '"' + (n === ui.lotSeconds ? ' selected' : '') + '>' + n + ' с</option>'; }).join('') + '</select></label>' +
-      '<label class="lbl chk"><input type="checkbox" data-act-change="autoClose"' + (ui.autoClose ? ' checked' : '') + '> закрывать лот автоматически</label></div>';
+    open.forEach(function (lot) {
+      html += '<div class="hlot"><div><span class="tag">Идёт лот</span><h3 class="h3">' + esc(G.projects[lot.project].name) + '</h3>' +
+        '<p class="small">' + S.teams.map(function (t) { var b = lot.bids[t.id]; return tNo(t.id) + ': ' + (b ? (b.amount === 0 ? 'пас' : '<b>' + b.amount + '</b>') : '—'); }).join(' · ') + '</p>' +
+        '<div class="row"><button class="btn small primary" data-act="closeLot" data-project="' + lot.project + '">Закрыть</button><button class="btn small" data-act="cancelLot" data-project="' + lot.project + '">Отменить</button></div></div>' + countdownHtml(lot, false) + '</div>';
+    });
+    if (open.length > 1) html += '<button class="btn" data-act="closeAll">Закрыть все открытые лоты</button>';
+    var nSel = Object.keys(ui.sel).filter(function (k) { return ui.sel[k] && !sold[k] && !openMap[k]; }).length;
+    html += '<div class="row"><label class="lbl">Время на лот <select class="inp sm" data-act-change="lotSeconds">' + [20, 30, 40, 60, 90, 120].map(function (n) { return '<option value="' + n + '"' + (n === ui.lotSeconds ? ' selected' : '') + '>' + n + ' с</option>'; }).join('') + '</select></label>' +
+      '<label class="lbl chk"><input type="checkbox" data-act-change="autoClose"' + (ui.autoClose ? ' checked' : '') + '> закрывать лоты автоматически</label></div>' +
+      '<p class="small muted">Отметьте один или несколько проектов и откройте их одновременно.</p>' +
+      '<button class="btn primary" data-act="startLots"' + (nSel ? '' : ' disabled') + '>Открыть выбранные лоты (' + nSel + ')</button>';
     html += '<ul class="lots">' + Object.keys(G.projects).map(function (p) {
-      var r = sold[p];
-      return '<li class="' + (r ? 'sold' : '') + (cur && cur.project === p ? ' live' : '') + '"><span class="ln">' + esc(G.projects[p].name) + '</span>' + dots(ov[p] || []) +
-        (r ? '<span class="small">' + (r.team == null ? 'не продан' : tLabel(r.team) + ' · ' + r.price) + '</span>' : cur ? '<span></span>' : '<button class="btn small" data-act="startLot" data-project="' + p + '">Открыть лот</button>') + '</li>';
+      var r = sold[p], live = openMap[p];
+      return '<li class="' + (r ? 'sold' : '') + (live ? ' live' : '') + '">' +
+        (r || live ? '<span></span>' : '<input type="checkbox" data-act-change="selLot" data-project="' + p + '"' + (ui.sel[p] ? ' checked' : '') + ' aria-label="Выбрать лот ' + esc(G.projects[p].name) + '">') +
+        '<span class="ln">' + esc(G.projects[p].name) + '</span>' + dots(ov[p] || []) +
+        (r ? '<span class="small">' + (r.team == null ? 'не продан' : tLabel(r.team) + ' · ' + r.price) + '</span>' : live ? '<span class="small">идёт</span>' : '<span></span>') + '</li>';
     }).join('') + '</ul>' + (S.auction.results.length ? '<button class="link" data-act="undoLot">Отменить результат последнего лота</button>' : '');
     return html;
   }
@@ -1040,7 +1313,7 @@
       var g = (S.grades || {})[p.id] || {};
       var sigs = (S.signals || []).filter(function (x) { return x.pid === p.id; }).length;
       var rated = S.ratings && S.ratings[p.id] ? 'да' : 'нет';
-      return '<div class="gcard"><div class="ghead"><b>' + esc(p.name) + '</b><span class="gt">' + gradeTotal(g) + '<small>/10</small></span></div>' +
+      return '<div class="gcard"><div class="ghead"><b>' + (captainId(ti) === p.id ? '<span class="crown" aria-hidden="true"></span>' : '') + esc(p.name) + (captainId(ti) === p.id ? ' <span class="small muted">капитан</span>' : '') + '</b><span class="gt">' + gradeTotal(g) + '<small>/10</small></span></div>' +
         '<p class="small muted">Сигналов: ' + sigs + ' · оценил факторы: ' + rated + '</p>' +
         G.criteria.map(function (c) {
           var opts = ''; for (var k = 0; k <= c.max; k++) opts += '<button class="' + (g[c.key] === k ? 'on' : '') + '" data-act="grade" data-pid="' + p.id + '" data-k="' + c.key + '" data-v="' + k + '">' + k + '</button>';
@@ -1093,6 +1366,7 @@
       case 'rate': { var f = d.f; ui.rate[f] = ui.rate[f] || [0, 0]; ui.rate[f][Number(d.axis)] = Number(d.v); render(); break; }
       case 'sendRates': run({ a: 'rate', ratings: ui.rate }, 'Оценки отправлены').then(function () { ui.rateEdit = false; render(); }, function () { }); break;
       case 'rateEdit': ui.rateEdit = true; render(); break;
+      case 'vote': run({ a: 'vote', candidate: d.pid }).catch(function () { }); break;
       case 'pickTeam': run({ a: 'pickTeam', team: d.team === '' ? null : Number(d.team) }).catch(function () { }); break;
       case 'pick': ui.pending = d.project; render(); var mb = root.querySelector('.mapbox'); if (mb) mb.scrollIntoView({ behavior: 'smooth', block: 'start' }); break;
       case 'cancelPick': ui.pending = null; render(); break;
@@ -1113,9 +1387,9 @@
             window.scrollTo(0, 0);
           }, function () { });
         break;
-      case 'bidStep': { var t = myTeam(); ui.bid = Math.max(0, Math.min(t ? t.budget : 0, (ui.bid == null ? 10 : ui.bid) + Number(d.d))); if (ui.bid > 0 && ui.bid < 5) ui.bid = 5; render(); break; }
-      case 'bid': run({ a: 'bid', amount: ui.bid }, 'Ставка принята: ' + ui.bid).catch(function () { }); break;
-      case 'pass': run({ a: 'bid', amount: 0 }, 'Команда пасует').catch(function () { }); break;
+      case 'bidStep': { var t = myTeam(); var pr0 = d.project; var cur0 = ui.bids[pr0] == null ? 10 : ui.bids[pr0]; var nv = Math.max(0, Math.min(t ? t.budget : 0, cur0 + Number(d.d))); if (nv > 0 && nv < 5) nv = 5; ui.bids[pr0] = nv; render(); break; }
+      case 'bid': run({ a: 'bid', project: d.project, amount: ui.bids[d.project] }, 'Ставка принята: ' + ui.bids[d.project]).catch(function () { }); break;
+      case 'pass': run({ a: 'bid', project: d.project, amount: 0 }, 'Команда пасует').catch(function () { }); break;
       // ведущий
       case 'phase': run({ a: 'setPhase', phase: d.phase }).catch(function () { }); break;
       case 'intro': run({ a: 'setIntro', step: Number(d.step) }).catch(function () { }); break;
@@ -1126,11 +1400,26 @@
       case 'autoTeams': run({ a: 'autoTeams', keep: d.keep === '1' }, 'Команды распределены').catch(function () { }); break;
       case 'kick': if (confirm('Удалить игрока из игры?')) run({ a: 'kick', pid: d.pid }).catch(function () { }); break;
       case 'unlockMap': run({ a: 'unlockMap', team: Number(d.team) }).catch(function () { }); break;
-      case 'startLot': ui.closing = null; run({ a: 'startLot', project: d.project, seconds: ui.lotSeconds }).catch(function () { }); break;
-      case 'closeLot': { var c = S.auction.current; if (c) { ui.closing = c.project; run({ a: 'closeLot', project: c.project }).then(function (r) { if (r.result) toast(resultText(r.result), 'ok'); }, function () { ui.closing = null; }); } break; }
-      case 'cancelLot': run({ a: 'cancelLot' }).catch(function () { }); break;
+      case 'startLots': {
+        var list = Object.keys(ui.sel).filter(function (k) { return ui.sel[k]; });
+        run({ a: 'startLots', projects: list, seconds: ui.lotSeconds }, list.length > 1 ? 'Открыто лотов: ' + list.length : 'Лот открыт').then(function () { ui.sel = {}; render(); }, function () { });
+        break;
+      }
+      case 'closeLot': ui.closing[d.project] = true; run({ a: 'closeLot', project: d.project }).then(function (r) { if (r.result) toast(resultText(r.result), 'ok'); }, function () { ui.closing[d.project] = false; }); break;
+      case 'closeAll': run({ a: 'closeAll' }, 'Все лоты закрыты').catch(function () { }); break;
+      case 'cancelLot': run({ a: 'cancelLot', project: d.project }).catch(function () { }); break;
       case 'undoLot': if (confirm('Отменить результат последнего лота и вернуть монеты?')) run({ a: 'undoLot' }).catch(function () { }); break;
       case 'spin': run({ a: 'spin' }).catch(function () { }); break;
+      case 'rollDice': run({ a: 'rollDice' }).catch(function () { }); break;
+      case 'drawShock': run({ a: 'drawShock', shock: d.shock || '' }).catch(function () { }); break;
+      case 'clearShocks': if (confirm('Сбросить кубик и все шоки?')) run({ a: 'clearShocks' }).catch(function () { }); break;
+      case 'setBet': if (!S.bet || confirm('Сменить вопрос? Уже сделанные ставки обнулятся.')) run({ a: 'setBet', qid: d.q }).catch(function () { }); break;
+      case 'revealBet': if (confirm('Закрыть приём ставок и раскрыть правильный ответ?')) run({ a: 'revealBet' }).catch(function () { }); break;
+      case 'betOpt': ui.betOpt = Number(d.i); render(); break;
+      case 'betStep': { var mp = myPoints(); ui.betStake = Math.max(0, Math.min(mp ? mp.base : 0, (ui.betStake || 0) + Number(d.d))); render(); break; }
+      case 'betAll': { var mp2 = myPoints(); ui.betStake = mp2 ? mp2.base : 0; render(); break; }
+      case 'placeBet': run({ a: 'placeBet', option: ui.betOpt, stake: ui.betStake }, 'Ставка принята: ' + ui.betStake).catch(function () { }); break;
+      case 'noBet': ui.betStake = 0; run({ a: 'placeBet', option: 0, stake: 0 }, 'Вы не рискуете — баллы сохранятся').catch(function () { }); break;
       case 'shock': { var k = d.shock; if (k === 'random') { var ks = Object.keys(G.shocks); k = ks[Math.floor(Math.random() * ks.length)]; } run({ a: 'setShock', shock: k }).catch(function () { }); break; }
       case 'export': run({ a: 'export' }, 'Выгружено в листы «Итоги», «Оценки» и «Сигналы»').catch(function () { }); break;
       case 'csv': csv(); break;
@@ -1151,7 +1440,11 @@
     if (!el) return;
     var a = el.dataset.actChange;
     if (a === 'teamSize') run({ a: 'setTeamMode', size: Number(el.value) }).catch(function () { });
+    if (a === 'setCaptain') run({ a: 'setCaptain', team: Number(el.dataset.team), pid: el.value || null }, el.value ? 'Капитан назначен' : 'Капитан — по голосованию').catch(function () { });
     if (a === 'assign') run({ a: 'assign', pid: el.dataset.pid, team: el.value === '' ? null : Number(el.value) }).catch(function () { });
+    if (a === 'diceValue' && el.value) run({ a: 'rollDice', value: Number(el.value) }).catch(function () { });
+    if (a === 'betStake') { ui.betStake = Number(el.value); delete drafts.betStake; render(); }
+    if (a === 'selLot') { ui.sel[el.dataset.project] = el.checked; render(); }
     if (a === 'lotSeconds') { ui.lotSeconds = Number(el.value); render(); }
     if (a === 'autoClose') { ui.autoClose = el.checked; render(); }
     if (a === 'spinWorld' && el.value) { if (confirm('Назначить мир ' + el.value + ' вместо случайного?')) run({ a: 'spin', world: el.value }).catch(function () { }); else el.value = ''; }

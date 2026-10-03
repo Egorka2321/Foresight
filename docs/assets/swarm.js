@@ -113,8 +113,10 @@
       ctx.globalAlpha = alpha;
       ctx.fillStyle = step === 3 && d.robust ? '#E8FBFF' : d.c;
       ctx.beginPath(); ctx.arc(d.x * W, d.y * H, r, 0, Math.PI * 2); ctx.fill();
-      if (step === 0 && Math.sin(t / 300 + d.ph * 7) > 0.985) {
-        ctx.globalAlpha = 0.35; ctx.beginPath(); ctx.arc(d.x * W, d.y * H, r * 4, 0, Math.PI * 2); ctx.fill();
+      // мягкое «дыхание» сигналов: медленная синусоида (период 6–10 с), без резких вспышек
+      if (step === 0) {
+        var glow = 0.5 + 0.5 * Math.sin(t / (950 + d.ph * 150) + d.ph * 7);
+        if (glow > 0.6) { ctx.globalAlpha = (glow - 0.6) * 0.45; ctx.beginPath(); ctx.arc(d.x * W, d.y * H, r * (1.6 + glow * 1.6), 0, Math.PI * 2); ctx.fill(); }
       }
     });
     ctx.globalAlpha = 1;
