@@ -272,13 +272,14 @@
 
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
 
-  // opts: { pins:[{zone,color,label,bad}], pick:bool, names:{z1:'…'}, labels:bool }
+  // opts: { pins:[{zone,color,label,bad}], pick:bool, busy:{z1:true} — занятые районы, names:{z1:'…'}, labels:bool }
   function svg(opts) {
     opts = opts || {};
     var s = '<svg class="citymap' + (opts.pick ? ' picking' : '') + '" viewBox="0 0 600 400" role="img" aria-label="Карта города">' + build();
     Object.keys(ZONES).forEach(function (z) {
-      s += '<polygon class="zone" data-zone="' + z + '" points="' + poly(ZONES[z]) + '"' +
-        (opts.pick ? ' data-act="placeZone" tabindex="0" role="button" aria-label="Зона ' + esc(opts.names ? opts.names[z] : z) + '"' : '') + '/>';
+      var busy = opts.busy && opts.busy[z];
+      s += '<polygon class="zone' + (busy ? ' busy' : '') + '" data-zone="' + z + '" points="' + poly(ZONES[z]) + '"' +
+        (opts.pick && !busy ? ' data-act="placeZone" tabindex="0" role="button" aria-label="Зона ' + esc(opts.names ? opts.names[z] : z) + '"' : '') + '/>';
     });
     if (opts.labels !== false && opts.names) {
       Object.keys(AT).forEach(function (z) {

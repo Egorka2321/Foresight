@@ -7,14 +7,14 @@
   var API = qs.get('api') || CFG.API_URL || '';
   if (API && API.indexOf('ВСТАВЬТЕ') >= 0) API = '';
 
-  var PHASES = ['intro', 'lobby', 'signals', 'factors', 'teams', 'world', 'map', 'overlay', 'auction', 'reveal', 'shock', 'results', 'bet', 'final'];
+  var PHASES = ['intro', 'lobby', 'signals', 'factors', 'teams', 'world', 'pitch', 'map', 'overlay', 'auction', 'reveal', 'shock', 'results', 'bet', 'final'];
   var PHASE_HINT = {
     intro: 'Что такое форсайт', lobby: 'Собираемся', signals: 'Что меняется вокруг города?', factors: 'Что сильнее всего изменит город?',
-    teams: 'Объединяемся в команды', world: 'Ваш мир будущего', map: 'Стройте город для своего мира', overlay: 'Что совпало у команд',
+    teams: 'Объединяемся в команды', world: 'Ваш мир будущего', pitch: 'Команды рассказывают о своих мирах', map: 'Стройте город для своего мира', overlay: 'Что совпало у команд',
     auction: 'Бюджет ограничен — выбирайте', reveal: 'Какой мир наступит?', shock: 'Кубик решит, сколько будет шоков', results: 'Кто победил и почему',
     bet: 'Рискнёте своими баллами?', final: 'Итоговый рейтинг',
   };
-  var PHASE_NAME = { intro: 'Заставка', lobby: 'Сбор', signals: 'Сигналы', factors: 'Факторы', teams: 'Команды', world: 'Миры', map: 'Карта', overlay: 'Наложение', auction: 'Аукцион', reveal: 'Судьба', shock: 'Шоки', results: 'Итоги', bet: 'Ставка', final: 'Финал' };
+  var PHASE_NAME = { intro: 'Заставка', lobby: 'Сбор', signals: 'Сигналы', factors: 'Факторы', teams: 'Команды', world: 'Миры', pitch: 'Рассказ', map: 'Карта', overlay: 'Наложение', auction: 'Аукцион', reveal: 'Судьба', shock: 'Шоки', results: 'Итоги', bet: 'Ставка', final: 'Финал' };
   var W = G.worldOrder;
   var FK = Object.keys(G.factors);
   var SPIN_MS = 6500;
@@ -214,6 +214,9 @@
     if (cv) {
       if (!swarm) swarm = new window.Swarm(role === 'screen' ? 240 : 120);
       swarm.attach(cv);
+      // на проекторе текст слева: кластеры собираются справа, а свободные точки плывут по всему экрану
+      if (role === 'screen' && cv.closest('.sintro')) swarm.region(0.42, 1, cv.closest('.is-rules') ? 0 : 0.46);
+      else swarm.region(0, 1, 0);
       swarm.setStep(Number(cv.dataset.step || 0));
     }
     tick();
@@ -256,7 +259,7 @@
 
   function phaseStrip(ph) {
     var idx = PHASES.indexOf(ph);
-    return '<div class="pstrip" aria-label="Этап ' + (idx + 1) + ' из ' + PHASES.length + '"><div class="pseg">' + PHASES.map(function (p, i) { return '<i class="' + (i < idx ? 'done' : i === idx ? 'now' : '') + '"></i>'; }).join('') + '</div>' +
+    return '<div class="pstrip" aria-label="Этап ' + (idx + 1) + ' из ' + PHASES.length + '"><div class="pseg" style="--n:' + PHASES.length + '">' + PHASES.map(function (p, i) { return '<i class="' + (i < idx ? 'done' : i === idx ? 'now' : '') + '"></i>'; }).join('') + '</div>' +
       '<div class="pmeta"><span class="pnum">Этап ' + (idx + 1) + ' из ' + PHASES.length + '</span><b>' + PHASE_NAME[ph] + '</b></div></div>';
   }
 
@@ -493,6 +496,7 @@
     else if (!t) body = '<section class="pad center"><div class="pulse"></div><h1 class="h2">Вы пока не в команде</h1><p class="muted">Ведущий скоро добавит вас. Экран обновится сам.</p></section>';
     else if (!t.world) body = '<section class="pad center"><div class="pulse"></div><h1 class="h2">Раздаём миры…</h1></section>';
     else if (ph === 'world') body = viewWorldPlayer(t);
+    else if (ph === 'pitch') body = viewPitchPlayer(t);
     else if (ph === 'map') body = viewMapPlayer(t);
     else if (ph === 'overlay') body = viewOverlayPlayer(t);
     else if (ph === 'auction') body = viewAuctionPlayer(t);
@@ -645,6 +649,38 @@
       '</section>';
   }
 
+  // ---------- рассказ команд о своих мирах ----------
+  var PITCH_Q = [
+    ['title', 'Как вы назвали свой мир'],
+    ['residents', 'Жители'],
+    ['business', 'Бизнес'],
+    ['government', 'Городская власть'],
+    ['signposts', 'Ранние признаки'],
+  ];
+  function pitchTeams() { return S.teams.filter(function (t) { return t.world && members(t.id).length; }).map(function (t) { return t.id; }); }
+  function pitchCur() { var ids = pitchTeams(); var c = S.pitchTeam; return ids.indexOf(c) >= 0 ? c : (ids.length ? ids[0] : null); }
+
+  function viewPitchPlayer(t) {
+    var cur = pitchCur();
+    if (cur === t.id) {
+      return '<section class="pad"><div class="pitchme" style="' + teamStyle(t.id) + '"><span class="mic" aria-hidden="true"></span><div><p class="small">Сейчас ваша очередь</p><h1 class="h2">Расскажите о своём мире</h1></div></div>' +
+        '<ol class="pitchplan"><li><b>Что за мир.</b> Название и суть в одной фразе: что случилось с комбинатом и с вниманием государства.</li><li><b>Последствия.</b> Что изменится для жителей, бизнеса и власти.</li><li><b>Ранние признаки.</b> По каким новостям мы поймём, что движемся в этот мир.</li></ol>' +
+        '<p class="muted small">Около 1,5 минуты. Ваши ответы уже на экране — это подсказка, не читайте их дословно.</p>' + pitchAnswers(t.id) + '</section>';
+    }
+    if (cur == null) return '<section class="pad center"><div class="pulse"></div><h1 class="h2">Скоро начнём</h1></section>';
+    var w = S.teams[cur].world;
+    return '<section class="pad">' + worldCard(w, { kicker: 'Рассказывает ' + tLabel(cur).toLowerCase(), short: true }) +
+      '<p class="muted">Слушайте и сравнивайте со своим миром. Что в нём общего с вашим? Какой проект пригодился бы и там, и у вас?</p>' + pitchAnswers(cur) +
+      (cur !== t.id ? '<p class="small muted center">' + (S.pitched && S.pitched.indexOf(t.id) >= 0 ? 'Ваша команда уже выступила.' : 'Ваша команда выступит позже — ведущий скажет, когда.') + '</p>' : '') + '</section>';
+  }
+
+  function pitchAnswers(ti) {
+    var t = S.teams[ti];
+    return '<dl class="pitchans" style="' + teamStyle(ti) + '">' + PITCH_Q.map(function (q) {
+      return '<div><dt>' + q[1] + '</dt><dd>' + (t[q[0]] ? esc(t[q[0]]) : '<span class="muted">—</span>') + '</dd></div>';
+    }).join('') + '</dl>';
+  }
+
   function effectHtml(r) {
     if (!r) return '';
     return '<p class="effect ' + (r.v < 0 ? 'neg' : 'pos') + '"><b>' + signed(r.v) + '</b> ' + esc(r.text) + '</p>';
@@ -656,14 +692,15 @@
     var full = placed.length >= limit;
     var pins = placed.map(function (p, i) { var r = eff(t.id, p); return { zone: t.placements[p], color: tColor(t.id), label: String(i + 1), bad: r && r.v < 0 }; });
     var pend = ui.pending && !t.submitted ? G.projects[ui.pending] : null;
+    var busy = busyZones(t, ui.pending);
     var effSum = placed.reduce(function (a, p) { var r = eff(t.id, p); return a + (r ? r.v : 0); }, 0);
     var html = '<section class="pad">' +
-      '<div class="maphead"><h1 class="h2">Город в мире «' + esc(tName(t.id)) + '»</h1><p class="muted">Выберите ' + limit + ' проектов, которые нужны городу в вашем мире, и поставьте их на карту. Место имеет значение: после отправки плана жители оценят, где вы строите, — штрафы и бонусы войдут в итог.</p></div>' +
-      captainBanner(t) + mapBox({ pins: pins, pick: !!pend }, pend ? 'picking' : '');
+      '<div class="maphead"><h1 class="h2">Город в мире «' + esc(tName(t.id)) + '»</h1><p class="muted">Выберите ' + limit + ' проектов, которые нужны городу в вашем мире, и поставьте их на карту. <b>Один район — одна постройка.</b> Место имеет значение: после отправки плана жители оценят, где вы строите, — штрафы и бонусы войдут в итог.</p></div>' +
+      captainBanner(t) + mapBox({ pins: pins, pick: !!pend, busy: pend ? busy : null }, pend ? 'picking' : '');
     var cap = isCaptain(t);
     if (pend) {
-      html += '<div class="pickbar" role="status"><p>Куда поставить «' + esc(pend.name) + '»? Нажмите на зону на карте или выберите здесь:</p><div class="zonechips">' +
-        Object.keys(G.zones).map(function (z) { return '<button class="chip zbtn" data-act="placeZone" data-zone="' + z + '"' + (ui.busy ? ' disabled' : '') + '>' + esc(G.zones[z].name) + '</button>'; }).join('') +
+      html += '<div class="pickbar" role="status"><p>Куда поставить «' + esc(pend.name) + '»? Нажмите на свободный район на карте или выберите здесь. Тёмные районы уже заняты.</p><div class="zonechips">' +
+        Object.keys(G.zones).map(function (z) { return '<button class="chip zbtn' + (busy[z] ? ' busy' : '') + '" data-act="placeZone" data-zone="' + z + '"' + (ui.busy || busy[z] ? ' disabled' : '') + ' title="' + (busy[z] ? 'Занято: ' + esc(G.projects[busy[z]].name) : '') + '">' + esc(G.zones[z].name) + (busy[z] ? ' · занят' : '') + '</button>'; }).join('') +
         '</div><button class="link" data-act="cancelPick">Отмена</button></div>';
     }
     html += '<div class="counter"><b>' + placed.length + '</b> из ' + limit + ' проектов' + (effSum ? ' · последствия размещения: <b class="' + (effSum < 0 ? 'neg' : 'pos') + '">' + signed(effSum) + '</b>' : '') + (t.submitted ? ' · план отправлен' : '') + '</div>';
@@ -688,19 +725,37 @@
     return html + '</section>';
   }
 
+  // районы, где у команды уже стоит другой проект
+  function busyZones(t, except) {
+    var b = {};
+    Object.keys(t.placements || {}).forEach(function (p) { if (p !== except) b[t.placements[p]] = p; });
+    return b;
+  }
+
+  function isCons(p) {
+    if (S.consensus) return S.consensus.indexOf(p) >= 0;
+    var n = 0; S.teams.forEach(function (t) { if (t.placements && t.placements[p]) n++; });
+    return n >= G.consensusMin;
+  }
+  function consBadge() { return '<em class="consb" title="Поддержка горожан: +' + G.consensusBonus + ' к результату во всех мирах">+' + G.consensusBonus + ' во всех мирах</em>'; }
+
   function overlayList(limit) {
     var data = overlayData().filter(function (x) { return x.teams.length > 0; });
     if (limit) data = data.slice(0, limit);
     if (!data.length) return '<p class="muted">Команды пока не поставили проекты на карту.</p>';
     return '<ol class="overlay">' + data.map(function (x) {
-      var robust = x.teams.length >= 3;
-      return '<li class="' + (robust ? 'robust' : '') + '"><span class="ovn">' + x.teams.length + '</span><span class="ovt">' + esc(G.projects[x.project].name) + (robust ? '<em>кандидат в устойчивые</em>' : '') + '</span>' + dots(x.teams) + '</li>';
+      var robust = x.teams.length >= G.consensusMin;
+      return '<li class="' + (robust ? 'robust' : '') + '"><span class="ovn">' + x.teams.length + '</span><span class="ovt">' + esc(G.projects[x.project].name) + (robust ? '<em>кандидат в устойчивые · +' + G.consensusBonus + ' во всех мирах</em>' : '') + '</span>' + dots(x.teams) + '</li>';
     }).join('') + '</ol>';
   }
 
   function viewOverlayPlayer(t) {
-    return '<section class="pad"><h1 class="h2">Пять карт наложены</h1><p class="muted">Каждая метка — проект одной из команд. Проекты, которые выбрали три команды и больше, нужны сразу в нескольких мирах — это кандидаты в устойчивые решения.</p>' +
-      mapBox({ pins: allPins() }) + overlayList() + '</section>';
+    return '<section class="pad"><h1 class="h2">Пять карт наложены</h1><p class="muted">Каждая метка — проект одной из команд. Проекты, которые выбрали ' + G.consensusMin + ' команды и больше, нужны сразу в нескольких мирах — это кандидаты в устойчивые решения.</p>' +
+      consRule() + mapBox({ pins: allPins() }) + overlayList() + '</section>';
+  }
+
+  function consRule() {
+    return '<div class="consrule"><b>Это влияет на очки.</b> Кандидаты в устойчивые получают поддержку горожан: <b>+' + G.consensusBonus + ' к результату во всех пяти мирах</b>, в том числе в худшем. Кто купит такой проект на аукционе, получит этот бонус. Ждите за них торга.</div>';
   }
 
   function committed(t, except) {
@@ -725,7 +780,7 @@
         var v = Math.max(0, Math.min(t.budget, ui.bids[lot.project]));
         var myZone = t.placements[lot.project];
         html += '<article class="lot"><div class="lothead"><div><span class="tag">' + esc(pr.tag) + '</span><h2 class="h2">' + esc(pr.name) + '</h2></div>' + countdownHtml(lot, false) + '</div><p>' + esc(pr.text) + '</p>' +
-          '<p class="small muted">На картах выбрали: ' + dots(ov ? ov.teams : []) + (myZone ? ' · у вас — ' + esc(G.zones[myZone].name) : '') + '</p>' + effectHtml(myZone ? eff(t.id, lot.project) : null);
+          (isCons(lot.project) ? '<p class="consline">' + consBadge() + ' кандидат в устойчивые</p>' : '') + '<p class="small muted">На картах выбрали: ' + dots(ov ? ov.teams : []) + (myZone ? ' · у вас — ' + esc(G.zones[myZone].name) : '') + '</p>' + effectHtml(myZone ? eff(t.id, lot.project) : null);
         if (isOpen && cap) {
           html += '<div class="bidrow"><div class="stepper">' +
             '<button class="btn round" data-act="bidStep" data-project="' + lot.project + '" data-d="-5" aria-label="Минус 5">−5</button><output class="bidval">' + v + '</output>' +
@@ -760,9 +815,9 @@
     var html = '<div class="score" style="' + teamStyle(t.id) + '"><span>Результат: ' + tLabel(t.id).toLowerCase() + '</span><b>' + signed(total) + '</b></div>';
     if (!sc.projects.length) return html + '<p class="muted">Команда ничего не купила на аукционе.</p>';
     html += '<ul class="bought score-list">' + sc.projects.map(function (pp) {
-      var base = S.payoff[pp.project][wi], v = withShock ? pp.value : base + pp.place;
+      var base = S.payoff[pp.project][wi], v = withShock ? pp.value : base + pp.place + (pp.cons || 0);
       var r = pp.place ? { v: pp.place, text: pp.placeText } : null;
-      return '<li><div><b>' + esc(G.projects[pp.project].name) + '</b><span class="small muted">в этом мире ' + signed(base) + (pp.place ? ' · место ' + signed(pp.place) : '') + (withShock && pp.shock ? ' · шоки ' + signed(pp.shock) : '') + '</span>' +
+      return '<li><div><b>' + esc(G.projects[pp.project].name) + '</b><span class="small muted">в этом мире ' + signed(base) + (pp.place ? ' · место ' + signed(pp.place) : '') + (pp.cons ? ' · поддержка горожан ' + signed(pp.cons) : '') + (withShock && pp.shock ? ' · шоки ' + signed(pp.shock) : '') + '</span>' +
         (r && r.v < 0 ? '<span class="small neg">' + esc(r.text) + '</span>' : '') + '</div><span class="' + (v > 0 ? 'pos' : v < 0 ? 'neg' : '') + '">' + signed(v) + '</span></li>';
     }).join('') + '</ul>';
     return html;
@@ -859,7 +914,7 @@
     var html = '<div class="tablewrap"><table class="wt"><thead><tr><th>Проект</th>' + W.map(function (w) { return '<th style="' + worldStyle(w) + '"><span class="wdot">' + w + '</span></th>'; }).join('') + '</tr></thead><tbody>';
     var sums = W.map(function () { return 0; });
     projects.forEach(function (pp) {
-      html += '<tr><td>' + esc(G.projects[pp.project].name) + (pp.place ? ' <span class="small ' + (pp.place < 0 ? 'neg' : 'pos') + '">место ' + signed(pp.place) + '</span>' : '') + '</td>' + W.map(function (w, i) { var v = S.payoff[pp.project][i] + pp.place; sums[i] += v; return '<td class="' + (v > 0 ? 'pos' : v < 0 ? 'neg' : '') + (w === S.reveal.world ? ' cur' : '') + '">' + signed(v) + '</td>'; }).join('') + '</tr>';
+      html += '<tr><td>' + esc(G.projects[pp.project].name) + (pp.place ? ' <span class="small ' + (pp.place < 0 ? 'neg' : 'pos') + '">место ' + signed(pp.place) + '</span>' : '') + (pp.cons ? ' <span class="small pos">поддержка ' + signed(pp.cons) + '</span>' : '') + '</td>' + W.map(function (w, i) { var v = S.payoff[pp.project][i] + pp.place + (pp.cons || 0); sums[i] += v; return '<td class="' + (v > 0 ? 'pos' : v < 0 ? 'neg' : '') + (w === S.reveal.world ? ' cur' : '') + '">' + signed(v) + '</td>'; }).join('') + '</tr>';
     });
     html += '<tr class="sum"><td>Итого</td>' + sums.map(function (v, i) { return '<td class="' + (W[i] === S.reveal.world ? 'cur' : '') + '">' + signed(v) + '</td>'; }).join('') + '</tr></tbody></table></div>';
     return html;
@@ -886,6 +941,7 @@
     else if (ph === 'factors') body = screenFactors();
     else if (ph === 'teams') body = screenTeams();
     else if (ph === 'world') body = screenMatrix();
+    else if (ph === 'pitch') body = screenPitch();
     else if (ph === 'map') body = screenMap();
     else if (ph === 'overlay') body = screenOverlay();
     else if (ph === 'auction') body = screenAuction();
@@ -902,7 +958,7 @@
     var body;
     if (sl.layout === 'rules') {
       body = '<div class="ipanel rules"><p class="istep">' + (step + 1) + ' / ' + G.intro.length + '</p><h1 class="title xl">' + esc(sl.title) + '</h1><p class="lead">' + esc(sl.text) + '</p>' +
-        '<ol class="rulelist">' + sl.steps.map(function (x) { return '<li><b>' + esc(x[0]) + '</b><span>' + esc(x[1]) + '</span></li>'; }).join('') + '</ol></div>';
+        '<ol class="rulelist" style="--rows:' + Math.ceil(sl.steps.length / 2) + '">' + sl.steps.map(function (x) { return '<li><b>' + esc(x[0]) + '</b><span>' + esc(x[1]) + '</span></li>'; }).join('') + '</ol></div>';
     } else {
       body = '<div class="ipanel"><p class="istep">' + (step + 1) + ' / ' + G.intro.length + '</p><h1 class="title xl">' + esc(sl.title) + '</h1><p class="lead">' + esc(sl.text) + '</p>' +
         '<ul class="ipoints">' + sl.points.map(function (p) { return '<li>' + esc(p) + '</li>'; }).join('') + '</ul>' + (sl.source ? '<p class="isource">' + esc(sl.source) + '</p>' : '') + '</div>';
@@ -968,6 +1024,34 @@
       '<div class="mgrid">' + cell('A') + cell('C') + cell('B') + cell('D') + '<div class="mcenter">' + cell('E') + '</div></div></div>';
   }
 
+  function screenPitch() {
+    var ids = pitchTeams(), cur = pitchCur();
+    if (cur == null) return '<div class="spitch empty"><h1 class="title xl">Команды готовятся рассказать о своих мирах</h1></div>';
+    var t = S.teams[cur], w = world(t.world), ms = members(cur), cap = captainId(cur);
+    var block = function (lbl, v, big) { return '<div class="pblk' + (big ? ' big' : '') + '"><h3>' + lbl + '</h3><p>' + (v ? esc(v) : '<span class="muted">—</span>') + '</p></div>'; };
+    return '<div class="spitch" style="' + worldStyle(t.world) + '">' +
+      '<aside class="pworld"><span class="pletter">' + t.world + '</span><p class="pkick">' + tLabel(cur) + ' рассказывает о мире</p>' +
+      '<h1 class="ptitle">' + esc(t.title || w.name) + '</h1>' + (t.title ? '<p class="porig">мир «' + esc(w.name) + '»</p>' : '') +
+      '<p class="paxes">' + esc(w.axes) + '</p><p class="pstory">' + esc(w.story) + '</p>' +
+      '<ul class="pteam">' + ms.map(function (m) { return '<li' + (m.id === cap ? ' class="leader"' : '') + '>' + (m.id === cap ? '<span class="crown" aria-hidden="true"></span>' : '') + esc(m.name) + '</li>'; }).join('') + '</ul></aside>' +
+      '<section class="pbody">' + block('Что изменится для жителей', t.residents) + block('Для бизнеса', t.business) + block('Для городской власти', t.government) + block('Ранние признаки: как мы узнаем, что движемся сюда', t.signposts, true) +
+      '<ol class="pqueue">' + ids.map(function (id) {
+        var done = S.pitched && S.pitched.indexOf(id) >= 0 && id !== cur;
+        return '<li class="' + (id === cur ? 'now' : done ? 'done' : '') + '" style="' + teamStyle(id) + '"><span class="tl s">' + S.teams[id].world + '</span>' + tLabel(id) + '</li>';
+      }).join('') + '</ol></section></div>';
+  }
+
+  function hostPitch() {
+    var ids = pitchTeams(), cur = pitchCur();
+    var k = ids.indexOf(cur), nxt = k >= 0 && k < ids.length - 1 ? ids[k + 1] : null;
+    return '<h2 class="h2">Рассказ команд</h2><p class="muted">Каждая команда за 1,5–2 минуты рассказывает суть своего мира и что она написала. На проекторе — мир и ответы выступающей команды. После всех выступлений спросите: что общего у миров? Это подводит к поиску устойчивых решений на карте.</p>' +
+      '<div class="pitchhost">' + ids.map(function (id) {
+        var done = S.pitched && S.pitched.indexOf(id) >= 0 && id !== cur;
+        return '<button class="btn' + (id === cur ? ' primary' : '') + '" data-act="pitchTeam" data-team="' + id + '">' + chip(id) + ' ' + esc(tName(id)) + (id === cur ? ' · на экране' : done ? ' · выступила' : '') + '</button>';
+      }).join('') + '</div>' +
+      (nxt != null ? '<button class="btn primary pnext" data-act="pitchTeam" data-team="' + nxt + '">Следующая: ' + tLabel(nxt) + '</button>' : '<p class="notice ok">Это последняя команда. Дальше — карта города.</p>');
+  }
+
   function screenMap() {
     return '<div class="ssplit">' + mapBox({ pins: allPins() }) + '<div class="sprog"><h2 class="h2">Команды строят город</h2>' + S.teams.map(function (t) {
       var n = Object.keys(t.placements || {}).length;
@@ -976,7 +1060,7 @@
   }
 
   function screenOverlay() {
-    return '<div class="ssplit">' + mapBox({ pins: allPins() }) + '<div><h2 class="h2">Что совпало у команд</h2>' + overlayList(10) + '</div></div>';
+    return '<div class="ssplit">' + mapBox({ pins: allPins() }) + '<div><h2 class="h2">Что совпало у команд</h2>' + consRule() + overlayList(10) + '</div></div>';
   }
 
   function screenAuction() {
@@ -1133,6 +1217,7 @@
   function viewHost() {
     var ph = S.phase;
     var html = '<header class="bar host"><span class="logo">Пульт ведущего</span><span class="who"><a href="#screen" target="_blank" rel="noopener" class="link">Экран проектора</a> <a href="#curator" target="_blank" rel="noopener" class="link">Оценки</a></span></header>';
+    if (S.schema !== 8) html += '<div class="notice bad"><b>Сервер устарел.</b> Сайт уже версии 8, а скрипт в Google Таблице — старый, поэтому часть кнопок не работает. Вставьте новый Code.gs и обязательно сделайте Развернуть → Управление развертываниями → ✏️ → Версия: новая → Развернуть.</div>';
     html += '<nav class="hphases">' + PHASES.map(function (p, i) {
       return '<button class="hph' + (p === ph ? ' now' : '') + '" data-act="phase" data-phase="' + p + '"><span>' + (i + 1) + '</span>' + PHASE_NAME[p] + '</button>';
     }).join('') + '</nav>';
@@ -1187,7 +1272,8 @@
       var bad = Object.keys(t.placements || {}).filter(function (p) { var r = eff(t.id, p); return r && r.v < 0; }).length;
       return progressRow(t.id, n, G.mapLimit, t.submitted ? 'отправлен' : n + '/' + G.mapLimit, (bad ? '<span class="small neg">штрафов: ' + bad + '</span>' : '') + (t.submitted ? '<button class="link" data-act="unlockMap" data-team="' + t.id + '">Открыть</button>' : ''));
     }).join('');
-    if (ph === 'overlay') return '<h2 class="h2">Наложение карт</h2>' + overlayList();
+    if (ph === 'overlay') return '<h2 class="h2">Наложение карт</h2>' + consRule() + overlayList() + '<p class="muted small">Спросите команды: почему разные миры выбрали одни и те же проекты? Это и есть инвариантные (устойчивые) решения.</p>';
+    if (ph === 'pitch') return hostPitch();
     if (ph === 'auction') return hostAuction();
     if (ph === 'reveal') {
       var sp = S.reveal ? spinState() : null;
@@ -1373,7 +1459,10 @@
       case 'placeZone': {
         if (!ui.pending) return;
         var zone = d.zone || (e.target.dataset && e.target.dataset.zone);
-        var proj = ui.pending; ui.pending = null;
+        var proj = ui.pending, mt = myTeam(), bz = mt ? busyZones(mt, proj) : {};
+        if (!zone) return;
+        if (bz[zone]) { toast('Один район — одна постройка: в районе «' + G.zones[zone].name + '» уже стоит «' + G.projects[bz[zone]].name + '»', 'err', 4000); return; }
+        ui.pending = null;
         run({ a: 'place', project: proj, zone: zone }, '«' + G.projects[proj].name + '» → ' + G.zones[zone].name).catch(function () { });
         break;
       }
@@ -1395,6 +1484,7 @@
       case 'intro': run({ a: 'setIntro', step: Number(d.step) }).catch(function () { }); break;
       case 'hideSignal': run({ a: 'hideSignal', id: d.id }).catch(function () { }); break;
       case 'showAxes': run({ a: 'showAxes' }).catch(function () { }); break;
+      case 'pitchTeam': run({ a: 'setPitch', team: Number(d.team) }).catch(function () { }); break;
       case 'dealWorlds': if (confirm('Раздать миры командам заново? Тексты команд сохранятся, но будут относиться к новому миру.')) run({ a: 'dealWorlds' }, 'Миры розданы заново').catch(function () { }); break;
       case 'teamMode': run({ a: 'setTeamMode', mode: d.mode }).catch(function () { }); break;
       case 'autoTeams': run({ a: 'autoTeams', keep: d.keep === '1' }, 'Команды распределены').catch(function () { }); break;
