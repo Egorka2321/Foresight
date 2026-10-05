@@ -923,3 +923,10 @@ body[data-role="play"] .pitchplan { color: #DDEBFF; }
 .pqueue li.now { color: #fff; border-color: var(--c); background: color-mix(in srgb, var(--c) 30%, transparent); }
 .pqueue li.done { opacity: .55; }
 .pitchhost { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+
+/* v8.1: у анимации на телефоне нет видимых краёв — точки растворяются в общем фоне, а не обрезаются рамкой */
+.introcanvas, .joinhero canvas {
+  -webkit-mask-image: radial-gradient(ellipse 50% 50% at 50% 50%, #000 55%, transparent 100%);
+  mask-image: radial-gradient(ellipse 50% 50% at 50% 50%, #000 55%, transparent 100%);
+}
+body[data-role="play"] .introcanvas { height: 260px; margin: -8px -40px 6px; }
