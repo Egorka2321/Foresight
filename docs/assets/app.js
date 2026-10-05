@@ -540,12 +540,15 @@
   function viewSignalsPlayer(p) {
     var mine = (S.signals || []).filter(function (x) { return x.pid === p.id; });
     var left = 2 - mine.length;
+    // в каждой категории — не больше одного сигнала от игрока
+    var used = {}; mine.forEach(function (x) { used[x.type] = true; });
+    if (used[ui.sigType]) ui.sigType = G.signalOrder.filter(function (k) { return !used[k]; })[0] || ui.sigType;
     var html = '<section class="pad"><h1 class="h2">Сигналы будущего</h1>' +
-      '<p class="muted">Что меняется вокруг Северогорска — в стране, в технологиях, в жизни людей? Предложите ' + (mine.length ? 'ещё ' + left : 'до двух') + ' ' + plural(left || 2, 'фактор', 'фактора', 'факторов') + ' и определите, что это.</p>';
+      '<p class="muted">Что меняется вокруг Северогорска — в стране, в технологиях, в жизни людей? Предложите ' + (mine.length ? 'ещё один фактор' : 'до двух факторов') + ' и определите, что это. <b>В каждой категории — только один ваш сигнал.</b></p>';
     if (left > 0) {
       html += '<div class="types" role="radiogroup" aria-label="Тип сигнала">' + G.signalOrder.map(function (k) {
-        var ty = G.signalTypes[k];
-        return '<button class="type' + (ui.sigType === k ? ' on' : '') + '" role="radio" aria-checked="' + (ui.sigType === k) + '" data-act="sigType" data-type="' + k + '"><b>' + esc(ty.name) + '</b><span>' + esc(ty.hint) + '</span></button>';
+        var ty = G.signalTypes[k], u = used[k];
+        return '<button class="type' + (ui.sigType === k && !u ? ' on' : '') + (u ? ' used' : '') + '" role="radio" aria-checked="' + (ui.sigType === k && !u) + '" data-act="sigType" data-type="' + k + '"' + (u ? ' disabled' : '') + '><b>' + esc(ty.name) + '</b><span>' + (u ? 'Ваш сигнал уже здесь' : esc(ty.hint)) + '</span></button>';
       }).join('') + '</div>' +
         '<form class="stack" data-form="signal"><label class="lbl" for="sig">Ваш ' + esc(G.signalTypes[ui.sigType].name.toLowerCase()) + '</label>' +
         '<input id="sig" class="inp" data-key="sig" maxlength="140" placeholder="Например: ' + esc(G.signalTypes[ui.sigType].example) + '">' +

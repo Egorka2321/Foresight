@@ -930,3 +930,10 @@ body[data-role="play"] .pitchplan { color: #DDEBFF; }
   mask-image: radial-gradient(ellipse 50% 50% at 50% 50%, #000 55%, transparent 100%);
 }
 body[data-role="play"] .introcanvas { height: 260px; margin: -8px -40px 6px; }
+
+/* v8.2: длинное название лота не выталкивает таймер за край карточки */
+.lothead > div:first-child { flex: 1; min-width: 0; }
+.lot .h2 { font-size: 22px; line-height: 1.2; hyphens: auto; -webkit-hyphens: auto; overflow-wrap: anywhere; }
+
+/* v8.3: категория сигнала, в которой у игрока уже есть сигнал */
+.type.used, .type:disabled.used { opacity: .45; cursor: not-allowed; border-style: dashed; }
