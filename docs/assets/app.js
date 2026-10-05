@@ -1201,7 +1201,7 @@
     var board = playerBoard(), place = board.map(function (x) { return x.pid; }).indexOf(pid) + 1;
     return '<section class="pad"><div class="placecard" style="' + teamStyle(t.id) + '"><span class="pl">' + place + '</span><div><p class="small">место из ' + board.length + '</p><h1 class="h2">' + mp.total + ' ' + plural(mp.total, 'балл', 'балла', 'баллов') + '</h1><p class="small">за игру ' + mp.base + (mp.delta ? ' · ставка ' + signed(mp.delta) : '') + '</p></div></div>' +
       '<h2 class="h3">Лучшие игроки</h2><ol class="pboard">' + board.slice(0, 10).map(function (x, i) { return '<li class="' + (x.pid === pid ? 'me' : '') + '"><span class="n">' + (i + 1) + '</span>' + chip(x.team) + '<span class="nm">' + esc(x.name) + '</span><b>' + x.total + '</b></li>'; }).join('') + '</ol>' +
-      '<p class="muted center">Спасибо за игру! Форсайт — это не про угадывание будущего, а про решения, которые выдержат любое.</p></section>';
+      '<p class="muted center">Спасибо за игру! Форсайт — это не про угадывание будущего, а про решения, которые сработают в любом из возможных миров.</p></section>';
   }
 
   function screenFinal() {
